@@ -18,6 +18,22 @@ internal sealed class PhoneCastService : IDisposable
     public string AndroidStatus => androidProcess is { HasExited: false } ? "Android receiver running" : "Android receiver stopped";
     public string IPhoneStatus => airPlayProcess is { HasExited: false } ? "AirPlay receiver running" : "AirPlay receiver stopped";
 
+    public string? GetWindowCaptureInput(string phoneType)
+    {
+        var process = phoneType == "iPhone" ? airPlayProcess : androidProcess;
+        if (process is null) return null;
+        try
+        {
+            if (process.HasExited) return null;
+            var expected = phoneType == "iPhone" ? IPhoneWindowTitle : AndroidWindowTitle;
+            var handle = CaptureWindowService.FindByProcess(process.Id, expected);
+            if (handle == IntPtr.Zero) handle = CaptureWindowService.FindByTitle(expected);
+            return handle == IntPtr.Zero ? null : CaptureWindowService.ToFfmpegInput(handle);
+        }
+        catch (InvalidOperationException) { return null; }
+        catch (System.ComponentModel.Win32Exception) { return null; }
+    }
+
     public async Task<string> StartAndroidAsync()
     {
         StopAndroid();

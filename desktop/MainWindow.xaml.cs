@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows.Input;
 using System.Windows.Controls.Primitives;
+using System.Windows.Threading;
 
 namespace XStudio;
 
@@ -17,7 +18,9 @@ public partial class MainWindow : Window
     private readonly StreamEngine engine = new();
     private readonly ScenePreviewService scenePreview = new();
     private readonly PhoneCastService phoneCast = new();
+    private readonly MicrophoneTestService microphoneTest = new();
     private readonly LocalRtmpService localRtmp = new();
+    private readonly DispatcherTimer previewWatchdog = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly List<Destination> destinations = [];
     private readonly List<StudioScene> scenes = [];
     private string activeSceneId = string.Empty;
@@ -26,6 +29,9 @@ public partial class MainWindow : Window
     private bool refreshingScenePicker;
     private bool verticalPreview;
     private bool restartingPreview;
+    private bool previewRestartPending;
+    private bool preparingBroadcast;
+    private string? previewInputSignature;
     private SceneSource? draggedPreviewSource;
     private string? selectedPreviewSourceId;
     private Point dragOrigin;
@@ -47,6 +53,14 @@ public partial class MainWindow : Window
         engine.StatusChanged += update => Dispatcher.BeginInvoke(() => ApplyEngineUpdate(update));
         scenePreview.FrameReady += bytes => Dispatcher.BeginInvoke(() => ApplyPreviewFrame(bytes));
         scenePreview.PreviewFailed += message => Dispatcher.BeginInvoke(() => ApplyPreviewFailure(message));
+        microphoneTest.LevelChanged += level => Dispatcher.BeginInvoke(() => UpdateMicrophoneMeter(level));
+        microphoneTest.Failed += message => Dispatcher.BeginInvoke(() =>
+        {
+            MicTestStatus.Text = "Microphone input stopped";
+            EngineErrorText.Text = message;
+            UpdateMicrophoneMeter(0);
+        });
+        previewWatchdog.Tick += (_, _) => RefreshLivePreviewInputs();
     }
 
     private async void WindowLoaded(object sender, RoutedEventArgs e)
@@ -127,6 +141,7 @@ public partial class MainWindow : Window
             preferences.CameraDevice = string.Empty;
         }
         DrawActiveScenePreview();
+        previewWatchdog.Start();
         syncingDevices = true;
         MicrophoneEnabled.IsChecked = SettingsMicEnabled.IsChecked = preferences.MicrophoneEnabled;
         AudioDeviceCombo.IsEnabled = SettingsAudioCombo.IsEnabled = preferences.MicrophoneEnabled;
@@ -295,7 +310,55 @@ public partial class MainWindow : Window
         AudioDeviceCombo.SelectedItem = SettingsAudioCombo.SelectedItem = selected;
         syncingDevices = false;
         preferences.AudioDevice = selected is "No microphone detected" or "FFmpeg unavailable" ? string.Empty : selected;
+        microphoneTest.Stop();
+        if (MicTestButton is not null) MicTestButton.Content = "Test microphone";
+        if (MicTestStatus is not null) MicTestStatus.Text = "Ready to test";
+        if (MicMeterFill is not null) MicMeterFill.Width = 0;
         SaveCapturePreferences();
+    }
+
+    private async void MicTestClick(object sender, RoutedEventArgs e)
+    {
+        if (engine.IsRunning)
+        {
+            MessageBox.Show(this, "Stop the broadcast before testing the microphone.", "Microphone is live", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (microphoneTest.IsRunning)
+        {
+            microphoneTest.Stop();
+            MicTestButton.Content = "Test microphone";
+            MicTestStatus.Text = "Test stopped";
+            UpdateMicrophoneMeter(0);
+            return;
+        }
+        var device = preferences.AudioDevice;
+        if (string.IsNullOrWhiteSpace(device))
+        {
+            MicTestStatus.Text = "Choose a microphone first";
+            return;
+        }
+        try
+        {
+            EngineErrorText.Text = string.Empty;
+            MicTestStatus.Text = "Listening · speak now";
+            MicTestButton.Content = "Stop test";
+            await microphoneTest.StartAsync(device);
+        }
+        catch (Exception ex)
+        {
+            microphoneTest.Stop();
+            MicTestButton.Content = "Test microphone";
+            MicTestStatus.Text = "Could not open microphone";
+            EngineErrorText.Text = ex.Message;
+        }
+    }
+
+    private void UpdateMicrophoneMeter(double level)
+    {
+        if (MicMeterTrack is null || MicMeterFill is null) return;
+        MicMeterFill.Width = Math.Max(0, (MicMeterTrack.ActualWidth - 2) * Math.Clamp(level, 0, 100) / 100);
+        if (level > 1 && microphoneTest.IsRunning) MicTestStatus.Text = $"Mic signal · {level:0}%";
     }
 
     private void QualityChanged(object sender, SelectionChangedEventArgs e) => DrawActiveScenePreview();
@@ -451,8 +514,13 @@ public partial class MainWindow : Window
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(12),
                 Margin = new Thickness(0, 0, 11, 11),
-                Width = 248
+                Width = 248,
+                Tag = scene.Id,
+                AllowDrop = true
             };
+            card.PreviewMouseMove += SceneCardPreviewMouseMove;
+            card.DragOver += SceneCardDragOver;
+            card.Drop += SceneCardDrop;
             var stack = new StackPanel();
             card.Child = stack;
             var preview = new Border
@@ -522,7 +590,112 @@ public partial class MainWindow : Window
             TikTokPreviewButton.Background = Brush(verticalPreview ? "#321C21" : "#222327");
             TikTokPreviewButton.Foreground = Brush(verticalPreview ? "#FF6978" : "#D3D3D5");
         }
+        RenderSceneLayers();
         DrawActiveScenePreview();
+    }
+
+    private void RenderSceneLayers()
+    {
+        SceneLayerList.Items.Clear();
+        var scene = scenes.FirstOrDefault(item => item.Id == activeSceneId);
+        var layers = scene?.Sources.AsEnumerable().Reverse().ToList() ?? [];
+        SceneLayerEmptyText.Visibility = layers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        for (var index = 0; index < layers.Count; index++)
+        {
+            var source = layers[index];
+            var order = index == 0 ? "FRONT" : index == layers.Count - 1 ? "BACK" : $"LAYER {index + 1}";
+            var row = new Border
+            {
+                Tag = new LayerChoice(source.Id), AllowDrop = true,
+                Background = Brush(source.Enabled ? "#222327" : "#1A1B1F"),
+                BorderBrush = Brush("#38393F"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(9, 7, 8, 7), Margin = new Thickness(0, 0, 0, 5),
+                ToolTip = "Drag this row to change which source appears in front"
+            };
+            row.PreviewMouseMove += SceneLayerPreviewMouseMove;
+            row.DragOver += SceneLayerDragOver;
+            row.Drop += SceneLayerDrop;
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var copy = new StackPanel();
+            copy.Children.Add(new TextBlock { Text = source.Name, Foreground = Brush(source.Enabled ? "#F3F2EF" : "#77787E"), FontSize = 11, FontWeight = FontWeights.SemiBold });
+            copy.Children.Add(new TextBlock { Text = $"{order} · {source.Kind.ToUpperInvariant()}{(source.Enabled ? string.Empty : " · HIDDEN")}", Foreground = Brush("#999A9E"), FontSize = 9, Margin = new Thickness(0, 2, 0, 0) });
+            grid.Children.Add(copy);
+            var front = MakeButton("Front", false); front.Height = 25; front.Margin = new Thickness(6, 0, 0, 0);
+            front.Click += (_, _) => MoveSourceLayer(source.Id, true);
+            Grid.SetColumn(front, 1); grid.Children.Add(front);
+            var back = MakeButton("Back", false); back.Height = 25; back.Margin = new Thickness(6, 0, 0, 0);
+            back.Click += (_, _) => MoveSourceLayer(source.Id, false);
+            Grid.SetColumn(back, 2); grid.Children.Add(back);
+            row.Child = grid;
+            SceneLayerList.Items.Add(row);
+        }
+    }
+
+    private void MoveSourceLayer(string sourceId, bool toFront)
+    {
+        var scene = scenes.FirstOrDefault(item => item.Id == activeSceneId);
+        if (scene is null) return;
+        var visualOrder = scene.Sources.AsEnumerable().Reverse().ToList();
+        var index = visualOrder.FindIndex(source => source.Id == sourceId);
+        if (index < 0) return;
+        var source = visualOrder[index]; visualOrder.RemoveAt(index);
+        visualOrder.Insert(toFront ? 0 : visualOrder.Count, source);
+        scene.Sources = visualOrder.AsEnumerable().Reverse().ToList();
+        SaveScenes(); RenderScenes(); _ = StartActiveScenePreviewAsync();
+    }
+
+    private void SceneLayerPreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || sender is not Border { Tag: LayerChoice layer }) return;
+        DragDrop.DoDragDrop((Border)sender, new DataObject("XStudio.SceneLayer", layer.SourceId), DragDropEffects.Move);
+    }
+
+    private void SceneLayerDragOver(object sender, DragEventArgs e) => e.Effects = e.Data.GetDataPresent("XStudio.SceneLayer") ? DragDropEffects.Move : DragDropEffects.None;
+
+    private void SceneLayerDrop(object sender, DragEventArgs e)
+    {
+        if (sender is not Border { Tag: LayerChoice target } || !e.Data.GetDataPresent("XStudio.SceneLayer")) return;
+        var sourceId = e.Data.GetData("XStudio.SceneLayer") as string;
+        var scene = scenes.FirstOrDefault(item => item.Id == activeSceneId);
+        if (sourceId is null || scene is null || sourceId == target.SourceId) return;
+        var visualOrder = scene.Sources.AsEnumerable().Reverse().ToList();
+        var sourceIndex = visualOrder.FindIndex(source => source.Id == sourceId);
+        var targetIndex = visualOrder.FindIndex(source => source.Id == target.SourceId);
+        if (sourceIndex < 0 || targetIndex < 0) return;
+        var source = visualOrder[sourceIndex]; visualOrder.RemoveAt(sourceIndex);
+        if (sourceIndex < targetIndex) targetIndex--;
+        visualOrder.Insert(targetIndex, source);
+        scene.Sources = visualOrder.AsEnumerable().Reverse().ToList();
+        SaveScenes(); RenderScenes(); _ = StartActiveScenePreviewAsync();
+        e.Handled = true;
+    }
+
+    private void SceneCardPreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || sender is not Border { Tag: string sceneId }) return;
+        DragDrop.DoDragDrop((Border)sender, new DataObject("XStudio.Scene", sceneId), DragDropEffects.Move);
+    }
+
+    private void SceneCardDragOver(object sender, DragEventArgs e) => e.Effects = e.Data.GetDataPresent("XStudio.Scene") ? DragDropEffects.Move : DragDropEffects.None;
+
+    private void SceneCardDrop(object sender, DragEventArgs e)
+    {
+        if (sender is not Border target || target.Tag is not string targetId || !e.Data.GetDataPresent("XStudio.Scene")) return;
+        var sourceId = e.Data.GetData("XStudio.Scene") as string;
+        if (sourceId is null || sourceId == targetId) return;
+        var from = scenes.FindIndex(scene => scene.Id == sourceId);
+        var to = scenes.FindIndex(scene => scene.Id == targetId);
+        if (from < 0 || to < 0) return;
+        var scene = scenes[from]; scenes.RemoveAt(from);
+        if (from < to) to--;
+        var point = e.GetPosition(target);
+        if (point.X > target.ActualWidth / 2) to++;
+        scenes.Insert(Math.Clamp(to, 0, scenes.Count), scene);
+        SaveScenes(); RenderScenes();
+        e.Handled = true;
     }
 
     private void ActiveSceneChanged(object sender, SelectionChangedEventArgs e)
@@ -777,6 +950,11 @@ public partial class MainWindow : Window
         if (activeScene is null) { MessageBox.Show(this, "Create or choose a scene before starting the broadcast.", "No active scene", MessageBoxButton.OK, MessageBoxImage.Information); return; }
         var audio = preferences.MicrophoneEnabled ? preferences.AudioDevice : null;
         if (audio is "No microphone detected" or "FFmpeg unavailable") audio = null;
+        if (preferences.MicrophoneEnabled && string.IsNullOrWhiteSpace(audio))
+        {
+            MessageBox.Show(this, "Choose a microphone or turn off ‘Include mic’ before starting the broadcast.", "Microphone not selected", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         var camera = string.IsNullOrWhiteSpace(preferences.CameraDevice) ? null : preferences.CameraDevice;
         var captureTarget = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
         if (activeScene.Sources.Any(source => source.Enabled && source.Kind == "Phone" && source.Content == "Android") && phoneCast.AndroidStatus != "Android receiver running")
@@ -789,13 +967,32 @@ public partial class MainWindow : Window
             try { PhoneCastStatus.Text = await phoneCast.StartIPhoneAsync(); }
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "iPhone phone cast", MessageBoxButton.OK, MessageBoxImage.Information); return; }
         }
+        preparingBroadcast = true;
+        var phoneInputs = GetPhoneCaptureInputs(activeScene);
+        microphoneTest.Stop();
+        MicTestButton.Content = "Test microphone";
+        MicTestStatus.Text = audio is null ? "Ready to test" : "Checking microphone…";
+        UpdateMicrophoneMeter(0);
+        if (audio is not null)
+        {
+            try { await microphoneTest.ProbeAsync(audio); }
+            catch (Exception ex)
+            {
+                EngineErrorText.Text = $"Microphone check failed: {ex.Message}";
+                MessageBox.Show(this, EngineErrorText.Text, "Microphone unavailable", MessageBoxButton.OK, MessageBoxImage.Error);
+                preparingBroadcast = false;
+                _ = StartActiveScenePreviewAsync();
+                return;
+            }
+        }
+        if (audio is not null) MicTestStatus.Text = "Microphone ready for stream";
         var qualityTag = (QualityCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "720p30";
         try
         {
             EngineErrorText.Text = string.Empty;
             scenePreview.Stop();
             PreviewStatusText.Text = "PREVIEW PAUSED DURING BROADCAST";
-            await engine.StartAsync(selected, activeScene, captureTarget, camera, audio, qualityTag);
+            await engine.StartAsync(selected, activeScene, captureTarget, camera, audio, qualityTag, phoneInputs);
         }
         catch (Exception ex)
         {
@@ -803,6 +1000,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, ex.Message, "Could not start the broadcast", MessageBoxButton.OK, MessageBoxImage.Error);
             _ = StartActiveScenePreviewAsync();
         }
+        finally { preparingBroadcast = false; }
     }
 
     private void ApplyEngineUpdate(EngineUpdate update)
@@ -880,19 +1078,25 @@ public partial class MainWindow : Window
 
     private async Task StartActiveScenePreviewAsync()
     {
-        if (!loaded || engine.IsRunning || restartingPreview) return;
-        var scene = scenes.FirstOrDefault(item => item.Id == activeSceneId);
-        if (scene is null) return;
+        if (!loaded || engine.IsRunning || preparingBroadcast) return;
+        if (restartingPreview) { previewRestartPending = true; return; }
         restartingPreview = true;
-        scenePreview.Stop();
-        livePreviewFrame = null;
         try
         {
-            PreviewStatusText.Text = "OPENING LIVE PREVIEW · 6 FPS";
-            var target = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
-            await scenePreview.StartAsync(scene, target, string.IsNullOrWhiteSpace(preferences.CameraDevice) ? null : preferences.CameraDevice,
-                phoneCast.AndroidStatus.EndsWith("running", StringComparison.OrdinalIgnoreCase),
-                phoneCast.IPhoneStatus.EndsWith("running", StringComparison.OrdinalIgnoreCase));
+            do
+            {
+                previewRestartPending = false;
+                var scene = scenes.FirstOrDefault(item => item.Id == activeSceneId)
+                    ?? new StudioScene { Name = "Live preview", Format = verticalPreview ? "Vertical · 9:16" : "Wide · 16:9" };
+                scenePreview.Stop();
+                livePreviewFrame = null;
+                PreviewStatusText.Text = "OPENING LIVE PREVIEW · 6 FPS";
+                var phoneInputs = GetPhoneCaptureInputs(scene);
+                previewInputSignature = GetPreviewInputSignature(scene, phoneInputs);
+                var target = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
+                await scenePreview.StartAsync(scene, target, string.IsNullOrWhiteSpace(preferences.CameraDevice) ? null : preferences.CameraDevice, phoneInputs);
+            }
+            while (previewRestartPending && !engine.IsRunning);
         }
         catch (Exception ex)
         {
@@ -900,7 +1104,35 @@ public partial class MainWindow : Window
             if (livePreviewFrame is null) DrawActiveScenePreview();
             EngineErrorText.Text = ex.Message;
         }
-        finally { restartingPreview = false; }
+        finally
+        {
+            restartingPreview = false;
+            if (previewRestartPending && !engine.IsRunning) _ = StartActiveScenePreviewAsync();
+        }
+    }
+
+    private Dictionary<string, string> GetPhoneCaptureInputs(StudioScene scene) => scene.Sources
+        .Where(source => source.Enabled && source.Kind == "Phone")
+        .Select(source => (source.Id, input: phoneCast.GetWindowCaptureInput(source.Content)))
+        .Where(entry => entry.input is not null)
+        .ToDictionary(entry => entry.Id, entry => entry.input!);
+
+    private string GetPreviewInputSignature(StudioScene scene, IReadOnlyDictionary<string, string> phoneInputs)
+    {
+        var captureTarget = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
+        var window = captureTarget == "desktop" ? "desktop" : CaptureWindowService.FindByTitle(captureTarget).ToInt64().ToString();
+        return string.Join("|", scene.Id, captureTarget, window, preferences.CameraDevice,
+            string.Join(",", phoneInputs.OrderBy(item => item.Key).Select(item => $"{item.Key}:{item.Value}")));
+    }
+
+    private void RefreshLivePreviewInputs()
+    {
+        if (!loaded || engine.IsRunning || preparingBroadcast || restartingPreview) return;
+        var scene = scenes.FirstOrDefault(item => item.Id == activeSceneId)
+            ?? new StudioScene { Name = "Live preview", Format = verticalPreview ? "Vertical · 9:16" : "Wide · 16:9" };
+        var signature = GetPreviewInputSignature(scene, GetPhoneCaptureInputs(scene));
+        if (signature != previewInputSignature || !scenePreview.IsRunning)
+            _ = StartActiveScenePreviewAsync();
     }
 
     private void ApplyPreviewFrame(byte[] jpeg)
@@ -998,7 +1230,8 @@ public partial class MainWindow : Window
         Canvas.SetLeft(formatBadge, viewport.X + 9); Canvas.SetTop(formatBadge, viewport.Y + 9); canvas.Children.Add(formatBadge);
         if (scene is null)
         {
-            canvas.Children.Add(new TextBlock { Text = "Create a scene to start building your layout", Foreground = Brush("#F3F2EF"), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
+            var emptyHint = new TextBlock { Text = "Live desktop preview · add a scene to arrange sources", Foreground = Brush("#F3F2EF"), FontSize = 12, Width = viewport.Width, TextAlignment = TextAlignment.Center, IsHitTestVisible = false };
+            Canvas.SetLeft(emptyHint, viewport.X); Canvas.SetTop(emptyHint, viewport.Y + viewport.Height / 2 - 10); canvas.Children.Add(emptyHint);
             return;
         }
         foreach (var source in scene.Sources.Where(source => source.Enabled))
@@ -1006,7 +1239,7 @@ public partial class MainWindow : Window
             var bounds = GetPreviewBounds(scene, source, viewport);
             var selected = source.Id == selectedPreviewSourceId;
             FrameworkElement layer;
-            if (livePreviewFrame is not null)
+            if (livePreviewFrame is not null && scenePreview.CapturesSource(source.Id))
             {
                 layer = new Border
                 {
@@ -1092,7 +1325,7 @@ public partial class MainWindow : Window
         return new Rect(x, y, Math.Min(width, canvasWidth), height);
     }
 
-    private static FrameworkElement BuildPreviewSourceVisual(SceneSource source, Rect bounds, double canvasWidth, bool vertical)
+    private FrameworkElement BuildPreviewSourceVisual(SceneSource source, Rect bounds, double canvasWidth, bool vertical)
     {
         var fontScale = canvasWidth / (vertical ? 720d : 1280d);
         FrameworkElement content;
@@ -1115,7 +1348,9 @@ public partial class MainWindow : Window
         }
         else
         {
-            var label = source.Kind == "Camera" ? (!string.IsNullOrWhiteSpace(source.Content) ? "CAMERA · DEVICE SELECTED" : "CAMERA · CHOOSE DEVICE ABOVE") : source.Kind == "Phone" ? $"{source.Content.ToUpperInvariant()} · START CAST" : source.Kind.ToUpperInvariant();
+            var label = source.Kind == "Camera"
+                ? string.IsNullOrWhiteSpace(preferences.CameraDevice) ? "CAMERA · CHOOSE DEVICE" : livePreviewFrame is null ? "CAMERA · CONNECTING" : "CAMERA · PREVIEW UNAVAILABLE"
+                : source.Kind == "Phone" ? $"{source.Content.ToUpperInvariant()} · WAITING FOR CAST" : source.Kind.ToUpperInvariant();
             content = MakeSourceBadge(label, bounds.Width, bounds.Height, source.Kind is "Camera" or "Phone" ? "#F04455" : "#66676D");
         }
         var layer = new Border { Width = bounds.Width, Height = bounds.Height, Child = content, Background = Brushes.Transparent };
@@ -1361,6 +1596,8 @@ public partial class MainWindow : Window
 
     private void WindowClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        previewWatchdog.Stop();
+        microphoneTest.Dispose();
         scenePreview.Dispose();
         if (engine.IsRunning) engine.Stop();
         engine.Dispose();
@@ -1463,4 +1700,5 @@ public partial class MainWindow : Window
     }
 
     private sealed record PreviewResizeTag(SceneSource Source, bool Left, bool Top);
+    private sealed record LayerChoice(string SourceId);
 }

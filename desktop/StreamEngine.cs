@@ -58,14 +58,21 @@ internal sealed class StreamEngine : IDisposable
         Regex.IsMatch(name, "audio|microphone|\\bmic\\b|headset|headphone|speaker|realtek|\\bline\\b|stereo mix|recording", RegexOptions.IgnoreCase)
         && !LooksLikeVideoDevice(name);
 
-    public async Task StartAsync(IReadOnlyCollection<Destination> destinations, StudioScene scene, string captureTarget, string? cameraDevice, string? audioDevice, string quality)
+    public async Task StartAsync(IReadOnlyCollection<Destination> destinations, StudioScene scene, string captureTarget, string? cameraDevice, string? audioDevice, string quality, IReadOnlyDictionary<string, string> phoneCaptureInputs)
     {
         if (IsRunning) throw new InvalidOperationException("A broadcast is already running.");
         if (destinations.Count == 0) throw new InvalidOperationException("Select at least one configured destination on the live desk.");
         if (scene.Sources.Any(source => source.Enabled && source.Kind == "Camera") && string.IsNullOrWhiteSpace(cameraDevice))
             throw new InvalidOperationException("This scene includes a camera. Choose a camera in Settings first.");
+        if (scene.Sources.Any(source => source.Enabled && source.Kind == "Camera") && !await CanOpenCameraAsync(cameraDevice!))
+            throw new InvalidOperationException($"X Studio could not open the selected camera ‘{cameraDevice}’. Close apps that are already using it, then test the camera again.");
         if (scene.Sources.Any(source => source.Enabled && source.Kind == "Phone") && !scene.Sources.Any(source => source.Enabled && source.Kind == "Phone" && source.Content is "Android" or "iPhone"))
             throw new InvalidOperationException("Choose Android or iPhone for the phone source.");
+        foreach (var source in scene.Sources.Where(source => source.Enabled && source.Kind == "Phone"))
+            if (!phoneCaptureInputs.ContainsKey(source.Id))
+                throw new InvalidOperationException($"The {source.Content} screen is not visible yet. Start screen mirroring and wait for the phone display to appear before going live.");
+        if (captureTarget != "desktop" && CaptureWindowService.FindByTitle(captureTarget) == IntPtr.Zero)
+            throw new InvalidOperationException("The selected app window is no longer open. Reopen it or choose it again in Capture settings.");
         foreach (var source in scene.Sources.Where(source => source.Enabled && source.Kind == "Image"))
             if (!File.Exists(source.Content)) throw new InvalidOperationException($"The image for {source.Name} could not be found. Edit the scene source and choose its file again.");
         foreach (var destination in destinations) ValidateDestination(destination);
@@ -88,7 +95,7 @@ internal sealed class StreamEngine : IDisposable
             await File.WriteAllTextAsync(path, WrapText(source.Content, Math.Max(8, (int)(width * source.Width / 100 / Math.Max(1, source.FontSize * .56)))));
             textFiles[source.Id] = path;
         }
-        var config = new EngineConfig(targets, sceneSnapshot, captureTarget, cameraDevice, audioDevice, width, height, fps, bitrate, hardwareAvailable, softwareAvailable, textFiles);
+        var config = new EngineConfig(targets, sceneSnapshot, captureTarget, cameraDevice, audioDevice, width, height, fps, bitrate, hardwareAvailable, softwareAvailable, textFiles, phoneCaptureInputs);
         lock (gate)
         {
             if (process is not null) throw new InvalidOperationException("A broadcast is already running.");
@@ -174,7 +181,7 @@ internal sealed class StreamEngine : IDisposable
 
     private static List<string> BuildArguments(EngineConfig config, bool useHardware)
     {
-        var captureInput = config.CaptureTarget == "desktop" ? "desktop" : $"title={config.CaptureTarget}";
+        var captureInput = config.CaptureTarget == "desktop" ? "desktop" : CaptureWindowService.ToFfmpegInput(CaptureWindowService.FindByTitle(config.CaptureTarget));
         var args = new List<string>
         {
             "-hide_banner", "-nostats", "-loglevel", "warning", "-stats_period", "1", "-progress", "pipe:2"
@@ -189,7 +196,7 @@ internal sealed class StreamEngine : IDisposable
             if (source.Kind == "Camera")
             {
                 cameraInputs[source.Id] = nextInput++;
-                args.AddRange(["-thread_queue_size", "256", "-f", "dshow", "-i", $"video={config.CameraDevice}"]);
+                args.AddRange(["-thread_queue_size", "512", "-f", "dshow", "-i", $"video={config.CameraDevice}"]);
             }
             else if (source.Kind == "Image")
             {
@@ -199,15 +206,14 @@ internal sealed class StreamEngine : IDisposable
             else if (source.Kind == "Phone")
             {
                 phoneInputs[source.Id] = nextInput++;
-                var title = source.Content == "iPhone" ? PhoneCastService.IPhoneWindowTitle : PhoneCastService.AndroidWindowTitle;
-                args.AddRange(["-thread_queue_size", "256", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-i", $"title={title}"]);
+                args.AddRange(["-thread_queue_size", "256", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", config.PhoneCaptureInputs[source.Id]]);
             }
         }
         int? audioInput = null;
         if (!string.IsNullOrWhiteSpace(config.AudioDevice))
         {
             audioInput = nextInput;
-            args.AddRange(["-thread_queue_size", "512", "-f", "dshow", "-i", $"audio={config.AudioDevice}"]);
+            args.AddRange(["-thread_queue_size", "512", "-f", "dshow", "-audio_buffer_size", "100", "-i", $"audio={config.AudioDevice}"]);
         }
 
         var graph = BuildSceneGraph(config, cameraInputs, imageInputs, phoneInputs);
@@ -255,13 +261,13 @@ internal sealed class StreamEngine : IDisposable
             else if (source.Kind == "Camera" && cameraInputs.TryGetValue(source.Id, out var cameraInput))
             {
                 var cameraWidth = Math.Max(96, (int)(config.Width * source.Width / 100));
-                filters.Add($"[{cameraInput}:v]scale={cameraWidth}:-1[media{nextLayer}]");
+                filters.Add($"[{cameraInput}:v]fps={config.Fps},scale={cameraWidth}:-1[media{nextLayer}]");
                 filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
             }
             else if (source.Kind == "Phone" && phoneInputs.TryGetValue(source.Id, out var phoneInput))
             {
                 var phoneWidth = Math.Max(96, (int)(config.Width * source.Width / 100));
-                filters.Add($"[{phoneInput}:v]scale={phoneWidth}:-1[media{nextLayer}]");
+                filters.Add($"[{phoneInput}:v]fps={config.Fps},scale={phoneWidth}:-1[media{nextLayer}]");
                 filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
             }
             else { continue; }
@@ -444,5 +450,12 @@ internal sealed class StreamEngine : IDisposable
     public void Dispose() => Stop();
 
     private sealed record StreamTarget(string Id, string Name, string ServerUrl, string OutputUrl);
-    private sealed record EngineConfig(List<StreamTarget> Targets, StudioScene Scene, string CaptureTarget, string? CameraDevice, string? AudioDevice, int Width, int Height, int Fps, string Bitrate, bool HardwareAvailable, bool SoftwareAvailable, IReadOnlyDictionary<string, string> TextFiles);
+    private static async Task<bool> CanOpenCameraAsync(string device)
+    {
+        var args = new List<string> { "-hide_banner", "-loglevel", "error", "-thread_queue_size", "64", "-f", "dshow", "-i", $"video={device}", "-frames:v", "1", "-f", "null", "-" };
+        try { return string.IsNullOrWhiteSpace(await RunAndCollectAsync(args, 5)); }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    private sealed record EngineConfig(List<StreamTarget> Targets, StudioScene Scene, string CaptureTarget, string? CameraDevice, string? AudioDevice, int Width, int Height, int Fps, string Bitrate, bool HardwareAvailable, bool SoftwareAvailable, IReadOnlyDictionary<string, string> TextFiles, IReadOnlyDictionary<string, string> PhoneCaptureInputs);
 }

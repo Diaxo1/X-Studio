@@ -9,16 +9,21 @@ internal sealed class ScenePreviewService : IDisposable
     private readonly object gate = new();
     private Process? process;
     private readonly List<string> textFiles = [];
+    private readonly Dictionary<string, (DateTime CheckedAt, bool Available)> cameraProbeCache = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> capturedSourceIds = [];
     private bool stopping;
 
     public event Action<byte[]>? FrameReady;
     public event Action<string>? PreviewFailed;
     public bool IsRunning { get { lock (gate) return process is { HasExited: false }; } }
+    public bool CapturesSource(string sourceId) { lock (gate) return capturedSourceIds.Contains(sourceId); }
 
-    public Task StartAsync(StudioScene scene, string captureTarget, string? cameraDevice, bool androidRunning, bool iphoneRunning)
+    public async Task StartAsync(StudioScene scene, string captureTarget, string? cameraDevice, IReadOnlyDictionary<string, string> phoneCaptureInputs)
     {
         Stop();
-        var arguments = BuildArguments(scene, captureTarget, cameraDevice, androidRunning, iphoneRunning);
+        var cameraAvailable = !scene.Sources.Any(source => source.Enabled && source.Kind == "Camera")
+            || (!string.IsNullOrWhiteSpace(cameraDevice) && await IsCameraAvailableAsync(cameraDevice));
+        var arguments = BuildArguments(scene, captureTarget, cameraDevice, cameraAvailable, phoneCaptureInputs);
         var child = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -40,7 +45,7 @@ internal sealed class ScenePreviewService : IDisposable
         lock (gate) { process = child; stopping = false; }
         var errors = ReadErrorsAsync(child);
         _ = ReadFramesAsync(child, errors);
-        return Task.CompletedTask;
+        return;
     }
 
     public void Stop()
@@ -60,29 +65,33 @@ internal sealed class ScenePreviewService : IDisposable
         CleanupTextFiles();
     }
 
-    private List<string> BuildArguments(StudioScene scene, string captureTarget, string? cameraDevice, bool androidRunning, bool iphoneRunning)
+    private List<string> BuildArguments(StudioScene scene, string captureTarget, string? cameraDevice, bool cameraAvailable, IReadOnlyDictionary<string, string> phoneCaptureInputs)
     {
         const int fps = 6;
         var vertical = scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase);
         var width = vertical ? 360 : 640;
         var height = vertical ? 640 : 360;
-        var capture = captureTarget == "desktop" ? "desktop" : $"title={captureTarget}";
+        var capture = "desktop";
+        if (captureTarget != "desktop")
+        {
+            var targetWindow = CaptureWindowService.FindByTitle(captureTarget);
+            if (targetWindow != IntPtr.Zero) capture = CaptureWindowService.ToFfmpegInput(targetWindow);
+        }
         var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostats", "-thread_queue_size", "64", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", capture };
         var camera = new Dictionary<string, int>();
         var images = new Dictionary<string, int>();
         var phones = new Dictionary<string, int>();
-        var missing = new HashSet<string>();
+        var captured = new HashSet<string>();
         var next = 1;
         foreach (var source in scene.Sources.Where(source => source.Enabled))
         {
             if (source.Kind == "Camera")
             {
-                if (!string.IsNullOrWhiteSpace(cameraDevice))
+                if (cameraAvailable && !string.IsNullOrWhiteSpace(cameraDevice))
                 {
                     camera[source.Id] = next++;
-                    args.AddRange(["-thread_queue_size", "32", "-f", "dshow", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-i", $"video={cameraDevice}"]);
+                    args.AddRange(["-thread_queue_size", "256", "-f", "dshow", "-i", $"video={cameraDevice}"]);
                 }
-                else missing.Add(source.Id);
             }
             else if (source.Kind == "Image" && File.Exists(source.Content))
             {
@@ -91,16 +100,19 @@ internal sealed class ScenePreviewService : IDisposable
             }
             else if (source.Kind == "Phone")
             {
-                var ready = source.Content == "Android" ? androidRunning : iphoneRunning;
-                if (ready)
+                if (phoneCaptureInputs.TryGetValue(source.Id, out var phoneInput))
                 {
                     phones[source.Id] = next++;
-                    var title = source.Content == "iPhone" ? PhoneCastService.IPhoneWindowTitle : PhoneCastService.AndroidWindowTitle;
-                    args.AddRange(["-thread_queue_size", "32", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", $"title={title}"]);
+                    args.AddRange(["-thread_queue_size", "256", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", phoneInput]);
                 }
-                else missing.Add(source.Id);
             }
         }
+
+        foreach (var source in scene.Sources.Where(source => source.Enabled))
+            if (source.Kind == "Text" || source.Kind == "Image" && images.ContainsKey(source.Id)
+                || source.Kind == "Camera" && camera.ContainsKey(source.Id)
+                || source.Kind == "Phone" && phones.ContainsKey(source.Id)) captured.Add(source.Id);
+        lock (gate) capturedSourceIds = captured;
 
         var fit = vertical
             ? $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
@@ -127,21 +139,14 @@ internal sealed class ScenePreviewService : IDisposable
             else if (camera.TryGetValue(source.Id, out var cameraInput))
             {
                 var layerWidth = Math.Max(24, (int)(width * source.Width / 100));
-                filters.Add($"[{cameraInput}:v]scale={layerWidth}:-1[media{nextLayer}]");
+                filters.Add($"[{cameraInput}:v]fps={fps},scale={layerWidth}:-1[media{nextLayer}]");
                 filters.Add(Overlay(current, nextLayer, source));
             }
             else if (phones.TryGetValue(source.Id, out var phoneInput))
             {
                 var layerWidth = Math.Max(24, (int)(width * source.Width / 100));
-                filters.Add($"[{phoneInput}:v]scale={layerWidth}:-1[media{nextLayer}]");
+                filters.Add($"[{phoneInput}:v]fps={fps},scale={layerWidth}:-1[media{nextLayer}]");
                 filters.Add(Overlay(current, nextLayer, source));
-            }
-            else if (missing.Contains(source.Id) || source.Kind == "Image")
-            {
-                var label = source.Kind == "Camera" ? "SELECT A CAMERA" : source.Kind == "Phone" ? $"START {source.Content.ToUpperInvariant()} CAST" : "IMAGE MISSING";
-                var text = MakeTextFile(label);
-                var x = Percent(source.X); var y = Percent(source.Y); var w = Percent(source.Width);
-                filters.Add($"[layer{current}]drawbox=x=W*{x}:y=H*{y}:w=W*{w}:h=H*0.22:color=0x292A30@1:t=fill,drawbox=x=W*{x}:y=H*{y}:w=W*{w}:h=H*0.22:color=0xF04455@1:t=2,drawtext=fontfile='{fontFile}':textfile='{EscapePath(text)}':fontsize=14:fontcolor=white:x=W*{x}+8:y=H*{y}+8[layer{nextLayer}]");
             }
             else { continue; }
             current = nextLayer;
@@ -149,6 +154,45 @@ internal sealed class ScenePreviewService : IDisposable
         filters.Add($"[layer{current}]format=yuvj420p[sceneout]");
         args.AddRange(["-filter_complex", string.Join(';', filters), "-map", "[sceneout]", "-an", "-c:v", "mjpeg", "-q:v", "8", "-f", "image2pipe", "pipe:1"]);
         return args;
+    }
+
+    private async Task<bool> IsCameraAvailableAsync(string cameraDevice)
+    {
+        lock (gate)
+        {
+            if (cameraProbeCache.TryGetValue(cameraDevice, out var cached) && DateTime.UtcNow - cached.CheckedAt < TimeSpan.FromSeconds(20))
+                return cached.Available;
+        }
+        var available = await ProbeCameraAsync(cameraDevice);
+        lock (gate) cameraProbeCache[cameraDevice] = (DateTime.UtcNow, available);
+        return available;
+    }
+
+    private static async Task<bool> ProbeCameraAsync(string cameraDevice)
+    {
+        using var child = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = ResolveFfmpeg(), UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardError = true, RedirectStandardOutput = true
+            }
+        };
+        foreach (var argument in new[] { "-hide_banner", "-loglevel", "error", "-thread_queue_size", "32", "-f", "dshow", "-i", $"video={cameraDevice}", "-frames:v", "1", "-f", "null", "-" })
+            child.StartInfo.ArgumentList.Add(argument);
+        try
+        {
+            if (!child.Start()) return false;
+            var stderr = child.StandardError.ReadToEndAsync();
+            var stdout = child.StandardOutput.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try { await child.WaitForExitAsync(timeout.Token); }
+            catch (OperationCanceledException) { try { child.Kill(entireProcessTree: true); } catch { } return false; }
+            _ = await stderr; _ = await stdout;
+            return child.ExitCode == 0;
+        }
+        catch (System.ComponentModel.Win32Exception) { return false; }
+        catch (InvalidOperationException) { return false; }
     }
 
     private static string Overlay(int current, int next, SceneSource source) =>

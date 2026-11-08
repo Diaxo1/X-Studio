@@ -20,15 +20,18 @@ The GitHub Actions workflow builds this setup kit on pushes to `main` or `master
 
 ## Current streaming path
 
-- Captures the Windows desktop using FFmpeg `gdigrab`.
+- Captures the Windows desktop or a selected app window using FFmpeg `gdigrab`; app and phone windows resolve through their live window handles so title changes do not break capture.
 - Captures one selected microphone through DirectShow, or disables audio.
+- Adds a live microphone test meter and checks that the selected input opens before a broadcast. Broadcast audio is mapped to AAC for every selected destination.
 - Offers 720p30 and 480p30 output profiles.
 - Attempts Media Foundation H.264 encoding, then falls back to x264 ultrafast when hardware initialization fails.
 - Uses FFmpeg's tee muxer to send one shared encode to multiple configured RTMP/RTMPS outputs.
 - Can start a local, loopback-only MediaMTX RTMP receiver and add its URL as a selected test destination.
 - Adds Android phone screens as scene layers through bundled scrcpy. Connect over USB, enable Developer options → USB debugging, approve the phone's trust prompt, then use Settings → Phone Cast.
 - Adds an iPhone AirPlay receiver through bundled UxPlay for Windows. Keep the phone and PC on the same Wi-Fi, choose Screen Mirroring on iPhone, and select this PC. Add an iPhone Phone source to the scene to layer its receiver window over the selected desktop or game capture. Protected video apps may block mirroring.
+- Keeps the live preview running while a phone is waiting to connect or a camera is unavailable; those sources show an on-canvas placeholder instead of stopping desktop capture. Phone windows are attached as soon as they appear.
 - The Live Desk keeps the active scene, display/game-window capture target, and camera selector in the top setup bar. Scene source layers can be dragged, resized, removed, and double-clicked in the preview. The stage preserves its 16:9 or 9:16 shape and shows the actual selected output dimensions. Wide and vertical profiles use different scenes and independent source layouts.
+- Lets you drag scene cards to reorder the library and drag source layers in the Scene Library to set their front/back depth.
 - Includes reusable templates for gameplay, just chatting, vertical phone, screen tutorial, and vertical showcase. Save any active scene as a custom template; custom templates stay on this PC under `%LOCALAPPDATA%\XStudio\templates.json`.
 - Saves destination details under `%LOCALAPPDATA%\XStudio`; stream keys are protected with Windows DPAPI for the current Windows account.
 
@@ -36,9 +39,8 @@ The Live desk's destination selector determines which configured outputs are inc
 
 ## Scope and limits
 
-This is an early Windows proof of concept. The preview composes desktop/window, camera, phone, image, and text inputs through FFmpeg at reduced resolution and frame rate to limit overhead. GDI capture can still fail for specific windows or device combinations; the preview reports FFmpeg's capture error when that happens. A physical phone was not connected during this implementation, so pairing and capture still need a device smoke check. Desktop/system audio mixing and the third-party plugin API are not yet implemented. Check the stream output, encoder state, and machine load before relying on it for a live broadcast.
+This is an early Windows proof of concept. The preview composes desktop/window, camera, phone, image, and text inputs through FFmpeg at reduced resolution and frame rate to limit overhead. A physical phone and microphone broadcast were not available for a device smoke check. Desktop/system audio mixing and the third-party plugin API are not yet implemented. Check the stream output, encoder state, and machine load before relying on it for a live broadcast.
 
 The setup kit contains third-party GPL/LGPL programs (FFmpeg and UxPlay). See `THIRD-PARTY-NOTICES.md`; corresponding source code and notices must be provided before public redistribution. The Apple Bonjour installer is downloaded directly from Apple when required and is not bundled because Apple's license prohibits external redistribution. The alpha setup kit is currently unsigned, so Windows may show an unknown-publisher prompt.
 
 The source includes an earlier browser concept and Node engine spike; the native WPF app in `desktop` is the active implementation.
-
