@@ -2,9 +2,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
-using System.Security.Cryptography;
-using System.Net.Http;
-using Microsoft.Win32;
 
 namespace XStudio;
 
@@ -28,6 +25,20 @@ internal sealed class PhoneCastService : IDisposable
             var expected = phoneType == "iPhone" ? IPhoneWindowTitle : AndroidWindowTitle;
             var handle = CaptureWindowService.FindByProcess(process.Id, expected);
             if (handle == IntPtr.Zero) handle = CaptureWindowService.FindByTitle(expected);
+            // UxPlay renames its video window in newer releases. Its renderer can
+            // also expose the stream in a separate process from the tray host.
+            if (handle == IntPtr.Zero)
+            {
+                var markers = phoneType == "iPhone"
+                    ? new[] { "uxplay", "airplay", "iphone", "ipad" }
+                    : new[] { "scrcpy", "android cast" };
+                foreach (var candidate in CaptureWindowService.GetVisibleWindows())
+                {
+                    if (!markers.Any(marker => candidate.Title.Contains(marker, StringComparison.OrdinalIgnoreCase))) continue;
+                    handle = CaptureWindowService.FindByProcess(candidate.ProcessId, candidate.Title);
+                    if (handle != IntPtr.Zero) break;
+                }
+            }
             return handle == IntPtr.Zero ? null : CaptureWindowService.ToFfmpegInput(handle);
         }
         catch (InvalidOperationException) { return null; }
@@ -61,41 +72,11 @@ internal sealed class PhoneCastService : IDisposable
     public async Task<string> StartIPhoneAsync()
     {
         StopIPhone();
-        await EnsureBonjourAsync();
         var receiver = FindPackageExecutable("XStudio.UxPlay", "uxplay.exe");
         airPlayProcess = Process.Start(Hidden(receiver, [])) ?? throw new InvalidOperationException("The AirPlay receiver could not start.");
+        await Task.Delay(1200);
+        if (airPlayProcess.HasExited) throw new InvalidOperationException("The AirPlay receiver exited while starting. Check Windows Security and the bundled UxPlay runtime, then try again.");
         return "AirPlay receiver opened. Connect your iPhone and choose this PC from Screen Mirroring.";
-    }
-
-    private static async Task EnsureBonjourAsync()
-    {
-        using (var service = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\Bonjour Service"))
-            if (service is not null) return;
-
-        var installer = Path.Combine(Path.GetTempPath(), "bonjour-xstudio-3.1.0.1.msi");
-        const string url = "https://swcdn.apple.com/content/downloads/52/06/071-03198/djcqm50b49h4o03eetqwowrdpf4o9sx71z/Bonjour64.msi";
-        const string expectedSha256 = "46E31E284DA64D6C2D366352B8A8ABCF7DB28D3E2A870D8FCF15C4A6FE0A6DD1";
-        try
-        {
-            using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
-            var bytes = await client.GetByteArrayAsync(url);
-            var digest = Convert.ToHexString(SHA256.HashData(bytes));
-            if (!digest.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Apple Bonjour download failed its integrity check.");
-            await File.WriteAllBytesAsync(installer, bytes);
-            using var install = Process.Start(new ProcessStartInfo
-            {
-                FileName = "msiexec.exe", Arguments = $"/i \"{installer}\"", UseShellExecute = true, Verb = "runas"
-            }) ?? throw new InvalidOperationException("The Bonjour installer could not start.");
-            await install.WaitForExitAsync();
-            if (install.ExitCode == 3010) throw new InvalidOperationException("Apple Bonjour was installed and Windows needs a restart before iPhone casting can start.");
-            if (install.ExitCode != 0) throw new InvalidOperationException($"Apple Bonjour setup returned code {install.ExitCode}.");
-        }
-        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
-        {
-            throw new InvalidOperationException("iPhone screen mirroring needs Apple's Bonjour service. Approve the Windows administrator prompt to install it, then retry.", ex);
-        }
-        finally { try { File.Delete(installer); } catch (IOException) { } }
     }
 
     public void StopAndroid() { Stop(ref androidProcess); }
@@ -149,3 +130,4 @@ internal sealed class PhoneCastService : IDisposable
 
     public void Dispose() { StopAndroid(); StopIPhone(); }
 }
+
