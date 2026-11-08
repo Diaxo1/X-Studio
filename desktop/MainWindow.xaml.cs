@@ -50,6 +50,8 @@ public partial class MainWindow : Window
     private double resizeAccumulatedX;
     private double resizeAccumulatedY;
     private BitmapSource? livePreviewFrame;
+    private byte[]? pendingPreviewJpeg;
+    private int previewFrameDispatchScheduled;
     private readonly Dictionary<string, double> videoDurations = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> probingVideoIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Slider> videoSliders = new(StringComparer.OrdinalIgnoreCase);
@@ -60,7 +62,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         engine.StatusChanged += update => Dispatcher.BeginInvoke(() => ApplyEngineUpdate(update));
-        scenePreview.FrameReady += bytes => Dispatcher.BeginInvoke(() => ApplyPreviewFrame(bytes));
+        scenePreview.FrameReady += QueuePreviewFrame;
         scenePreview.PreviewFailed += message => Dispatcher.BeginInvoke(() => ApplyPreviewFailure(message));
         microphoneTest.LevelChanged += level => Dispatcher.BeginInvoke(() => UpdateMicrophoneMeter(level));
         microphoneTest.Failed += message => Dispatcher.BeginInvoke(() =>
@@ -1238,6 +1240,24 @@ public partial class MainWindow : Window
         {
             PreviewStatusText.Text = "DECODING PREVIEW FRAME…";
         }
+    }
+
+    private void QueuePreviewFrame(byte[] jpeg)
+    {
+        Interlocked.Exchange(ref pendingPreviewJpeg, jpeg);
+        SchedulePreviewFrameDispatch();
+    }
+
+    private void SchedulePreviewFrameDispatch()
+    {
+        if (Interlocked.Exchange(ref previewFrameDispatchScheduled, 1) != 0) return;
+        _ = Dispatcher.BeginInvoke(() =>
+        {
+            var latest = Interlocked.Exchange(ref pendingPreviewJpeg, null);
+            if (latest is not null) ApplyPreviewFrame(latest);
+            Volatile.Write(ref previewFrameDispatchScheduled, 0);
+            if (Volatile.Read(ref pendingPreviewJpeg) is not null) SchedulePreviewFrameDispatch();
+        });
     }
 
     private void ApplyPreviewFailure(string message)
