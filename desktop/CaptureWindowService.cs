@@ -95,6 +95,7 @@ internal static class CaptureWindowService
     {
         IntPtr first = IntPtr.Zero;
         var exact = IntPtr.Zero;
+        long largestArea = 0;
         EnumWindows((handle, _) =>
         {
             if (!IsUsable(handle)) return true;
@@ -107,7 +108,21 @@ internal static class CaptureWindowService
                 exact = handle;
                 return false;
             }
-            first = handle;
+            if (preferredTitle is not null && title.Contains(preferredTitle, StringComparison.OrdinalIgnoreCase))
+            {
+                exact = handle;
+                return false;
+            }
+            if (preferredTitle is not null && preferredTitle.Contains(title, StringComparison.OrdinalIgnoreCase) && title.Length >= 4)
+            {
+                exact = handle;
+                return false;
+            }
+            if (GetWindowRect(handle, out var rectangle))
+            {
+                var area = (long)(rectangle.Right - rectangle.Left) * (rectangle.Bottom - rectangle.Top);
+                if (area > largestArea) { largestArea = area; first = handle; }
+            }
             return true;
         }, IntPtr.Zero);
         return exact != IntPtr.Zero ? exact : first;
