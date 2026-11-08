@@ -17,6 +17,7 @@ internal sealed class ScenePreviewService : IDisposable
     public event Action<string>? PreviewFailed;
     public bool IsRunning { get { lock (gate) return process is { HasExited: false }; } }
     public bool CapturesSource(string sourceId) { lock (gate) return capturedSourceIds.Contains(sourceId); }
+    public bool CaptureTargetFallback { get; private set; }
 
     public async Task StartAsync(StudioScene scene, string captureTarget, string? cameraDevice, IReadOnlyDictionary<string, string> phoneCaptureInputs)
     {
@@ -72,10 +73,12 @@ internal sealed class ScenePreviewService : IDisposable
         var width = vertical ? 360 : 640;
         var height = vertical ? 640 : 360;
         var capture = "desktop";
+        CaptureTargetFallback = false;
         if (captureTarget != "desktop")
         {
             var targetWindow = CaptureWindowService.FindByTitle(captureTarget);
             if (targetWindow != IntPtr.Zero) capture = CaptureWindowService.ToFfmpegInput(targetWindow);
+            else CaptureTargetFallback = true;
         }
         var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostats", "-thread_queue_size", "64", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", capture };
         var camera = new Dictionary<string, int>();

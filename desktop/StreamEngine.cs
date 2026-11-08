@@ -44,19 +44,11 @@ internal sealed class StreamEngine : IDisposable
         var hasSectionHeaders = output.Contains(sectionName, StringComparison.OrdinalIgnoreCase);
         var section = hasSectionHeaders ? output.Split(sectionName, 2, StringSplitOptions.None).LastOrDefault() ?? string.Empty : output;
         if (hasSectionHeaders) section = section.Split(otherSection, 2, StringSplitOptions.None)[0];
-        var names = Regex.Matches(section, "\"([^\"\\r\\n]+)\"\\s*\\((?:video|audio|none)\\)", RegexOptions.IgnoreCase)
+        var names = Regex.Matches(section, $"\"([^\"\\r\\n]+)\"\\s*\\({requestedType}\\)", RegexOptions.IgnoreCase)
             .Select(match => match.Groups[1].Value.Trim())
             .Where(name => name.Length > 0 && !name.StartsWith("@device_", StringComparison.OrdinalIgnoreCase));
-        return names.Where(name => requestedType == "video" ? LooksLikeVideoDevice(name) : LooksLikeAudioDevice(name))
-            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
-
-    private static bool LooksLikeVideoDevice(string name) =>
-        Regex.IsMatch(name, "camera|webcam|cam|video|capture", RegexOptions.IgnoreCase);
-
-    private static bool LooksLikeAudioDevice(string name) =>
-        Regex.IsMatch(name, "audio|microphone|\\bmic\\b|headset|headphone|speaker|realtek|\\bline\\b|stereo mix|recording", RegexOptions.IgnoreCase)
-        && !LooksLikeVideoDevice(name);
 
     public async Task StartAsync(IReadOnlyCollection<Destination> destinations, StudioScene scene, string captureTarget, string? cameraDevice, string? audioDevice, string quality, IReadOnlyDictionary<string, string> phoneCaptureInputs)
     {

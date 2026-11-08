@@ -1095,6 +1095,8 @@ public partial class MainWindow : Window
                 previewInputSignature = GetPreviewInputSignature(scene, phoneInputs);
                 var target = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
                 await scenePreview.StartAsync(scene, target, string.IsNullOrWhiteSpace(preferences.CameraDevice) ? null : preferences.CameraDevice, phoneInputs);
+                if (scenePreview.CaptureTargetFallback)
+                    PreviewStatusText.Text = "WINDOW NOT FOUND · SHOWING DESKTOP UNTIL IT OPENS";
             }
             while (previewRestartPending && !engine.IsRunning);
         }
@@ -1142,7 +1144,9 @@ public partial class MainWindow : Window
             using var stream = new MemoryStream(jpeg);
             var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.StreamSource = stream; bitmap.EndInit(); bitmap.Freeze();
             livePreviewFrame = bitmap;
-            PreviewStatusText.Text = engine.IsRunning ? "STREAMING · LAST PREVIEW FRAME" : "LIVE PREVIEW · 6 FPS";
+            PreviewStatusText.Text = scenePreview.CaptureTargetFallback
+                ? "WINDOW NOT FOUND · SHOWING DESKTOP UNTIL IT OPENS"
+                : engine.IsRunning ? "STREAMING · LAST PREVIEW FRAME" : "LIVE PREVIEW · 6 FPS";
             var image = ScenePreviewCanvas.Children.OfType<Image>().FirstOrDefault(item => Equals(item.Tag, "LivePreviewImage"));
             if (image is null) DrawActiveScenePreview();
             else image.Source = bitmap;
