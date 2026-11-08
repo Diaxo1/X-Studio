@@ -214,7 +214,7 @@ internal sealed class SceneEditorWindow : Window
     private static SceneSource CloneSource(SceneSource source) => new()
     {
         Id = source.Id, Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color,
-        X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled, PlaybackPositionSeconds = source.PlaybackPositionSeconds
+        X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled, PlaybackPositionSeconds = source.PlaybackPositionSeconds, WindowProcessId = source.WindowProcessId
     };
 
     private static void AddField(Panel parent, string title, Control field)
