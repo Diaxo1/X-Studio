@@ -182,10 +182,10 @@ internal sealed class StreamEngine : IDisposable
         var captureInput = config.CaptureTarget == "desktop" ? "desktop" : CaptureWindowService.ToFfmpegInput(CaptureWindowService.FindByTitle(config.CaptureTarget));
         var args = new List<string>
         {
-            "-hide_banner", "-nostats", "-loglevel", "warning", "-stats_period", "1", "-progress", "pipe:2"
+            "-hide_banner", "-nostats", "-loglevel", "warning", "-stats_period", "1", "-progress", "pipe:2", "-filter_threads", "2", "-filter_complex_threads", "2"
         };
         if (hasExplicitCapture) args.AddRange(["-f", "lavfi", "-i", $"color=c=black:s={config.Width}x{config.Height}:r={config.Fps}"]);
-        else args.AddRange(["-thread_queue_size", "512", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "1", "-i", captureInput]);
+        else args.AddRange(["-thread_queue_size", "8", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "1", "-i", captureInput]);
         var cameraInputs = new Dictionary<string, int>();
         var imageInputs = new Dictionary<string, int>();
         var phoneInputs = new Dictionary<string, int>();
@@ -197,7 +197,7 @@ internal sealed class StreamEngine : IDisposable
             if (source.Kind == "Camera")
             {
                 cameraInputs[source.Id] = nextInput++;
-                args.AddRange(["-thread_queue_size", "512", "-f", "dshow", "-i", $"video={config.CameraDevice}"]);
+                args.AddRange(["-thread_queue_size", "8", "-f", "dshow", "-i", $"video={config.CameraDevice}"]);
             }
             else if (source.Kind == "Image")
             {
@@ -207,13 +207,13 @@ internal sealed class StreamEngine : IDisposable
             else if (source.Kind == "Phone")
             {
                 phoneInputs[source.Id] = nextInput++;
-                args.AddRange(["-thread_queue_size", "256", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", config.PhoneCaptureInputs[source.Id]]);
+                args.AddRange(["-thread_queue_size", "8", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", config.PhoneCaptureInputs[source.Id]]);
             }
             else if (source.Kind is "Display" or "App")
             {
                 var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindBySource(source);
                 captureInputs[source.Id] = nextInput++;
-                args.AddRange(["-thread_queue_size", "512", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", window == IntPtr.Zero ? "desktop" : CaptureWindowService.ToFfmpegInput(window)]);
+                args.AddRange(["-thread_queue_size", "8", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", window == IntPtr.Zero ? "desktop" : CaptureWindowService.ToFfmpegInput(window)]);
             }
             else if ((source.Kind is "Video" or "Background") && source.Content != "transparent")
             {
@@ -230,7 +230,7 @@ internal sealed class StreamEngine : IDisposable
         if (!string.IsNullOrWhiteSpace(config.AudioDevice))
         {
             audioInput = nextInput;
-            args.AddRange(["-thread_queue_size", "512", "-f", "dshow", "-audio_buffer_size", "100", "-i", $"audio={config.AudioDevice}"]);
+            args.AddRange(["-thread_queue_size", "64", "-f", "dshow", "-audio_buffer_size", "100", "-i", $"audio={config.AudioDevice}"]);
         }
 
         var graph = BuildSceneGraph(config, cameraInputs, imageInputs, phoneInputs, captureInputs, videoInputs);
