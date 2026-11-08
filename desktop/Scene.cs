@@ -28,6 +28,7 @@ public sealed class SceneSource
     public double CropBottom { get; set; }
     public int FontSize { get; set; } = 48;
     public bool Enabled { get; set; } = true;
+    public double PlaybackPositionSeconds { get; set; }
 }
 
 internal sealed record SceneTemplate(string Name, string Format, IReadOnlyList<SceneSource> Sources)
@@ -112,7 +113,7 @@ internal sealed record SceneTemplate(string Name, string Format, IReadOnlyList<S
     }
 
     private static string CustomTemplatePath() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "XStudio", "templates.json");
-    private static SceneSource CopySource(SceneSource source) => new() { Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color, X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled };
+    private static SceneSource CopySource(SceneSource source) => new() { Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color, X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled, PlaybackPositionSeconds = source.PlaybackPositionSeconds };
 }
 
 internal sealed class SceneLibrary
@@ -147,3 +148,4 @@ internal sealed class SceneState(List<StudioScene> scenes, string activeSceneId)
     public List<StudioScene> Scenes { get; set; } = scenes;
     public string ActiveSceneId { get; set; } = activeSceneId;
 }
+
