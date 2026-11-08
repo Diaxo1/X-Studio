@@ -74,6 +74,18 @@ internal sealed class SceneSourceEditorWindow : Window
         browse.Click += BrowseImage;
         DockPanel.SetDock(browse, Dock.Right);
         contentDock.Children.Add(browse);
+        var refreshApps = Button("Refresh apps", false);
+        refreshApps.Margin = new Thickness(0, 0, 7, 0);
+        refreshApps.Visibility = Visibility.Collapsed;
+        refreshApps.Click += (_, _) =>
+        {
+            var selected = contentBox.Text;
+            appWindowBox.Items.Clear();
+            foreach (var title in CaptureWindowService.GetVisibleWindowTitles()) appWindowBox.Items.Add(title);
+            appWindowBox.SelectedItem = appWindowBox.Items.Cast<string>().FirstOrDefault(title => title.Equals(selected, StringComparison.OrdinalIgnoreCase));
+        };
+        DockPanel.SetDock(refreshApps, Dock.Right);
+        contentDock.Children.Add(refreshApps);
         contentDock.Children.Add(contentBox);
         phoneTypeBox.Height = 38;
         phoneTypeBox.Items.Add("Android"); phoneTypeBox.Items.Add("iPhone");
@@ -151,7 +163,9 @@ internal sealed class SceneSourceEditorWindow : Window
         appWindowBox.Visibility = kind == "App" ? Visibility.Visible : Visibility.Collapsed;
         if (contentBox.Parent is DockPanel contentParent)
             foreach (UIElement child in contentParent.Children)
-                if (child is Button browse) browse.Visibility = kind is "Image" or "Video" or "Background" ? Visibility.Visible : Visibility.Collapsed;
+                if (child is Button browse) browse.Visibility = browse.Content?.ToString() == "Refresh apps"
+                    ? kind == "App" ? Visibility.Visible : Visibility.Collapsed
+                    : kind is "Image" or "Video" or "Background" ? Visibility.Visible : Visibility.Collapsed;
         contentLabel.Text = kind switch { "Camera" => "CAMERA SOURCE", "Phone" => "PHONE TYPE", "Image" => "IMAGE FILE", "Video" => "VIDEO FILE", "Background" => "BACKGROUND FILE · OR ‘transparent’", "App" => "APP WINDOW TITLE", _ => "TEXT CONTENT" };
         if (kind == "Phone" && string.IsNullOrWhiteSpace(contentBox.Text)) contentBox.Text = "Android";
         if (kind == "Phone" && contentBox.Text == "Your text") contentBox.Text = "Android";
@@ -239,3 +253,4 @@ internal sealed class SceneSourceEditorWindow : Window
     private void Warn(string message) => MessageBox.Show(this, message, "Check source details", MessageBoxButton.OK, MessageBoxImage.Information);
     private static SolidColorBrush Brush(string color) => new((Color)ColorConverter.ConvertFromString(color));
 }
+
