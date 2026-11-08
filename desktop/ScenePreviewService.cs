@@ -68,10 +68,13 @@ internal sealed class ScenePreviewService : IDisposable
 
     private List<string> BuildArguments(StudioScene scene, string captureTarget, string? cameraDevice, bool cameraAvailable, IReadOnlyDictionary<string, string> phoneCaptureInputs)
     {
-        const int fps = 6;
         var vertical = scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase);
-        var width = vertical ? 360 : 640;
-        var height = vertical ? 640 : 360;
+        // The live desk is an editor monitor, not the encoded stream. Keep the
+        // portrait monitor intentionally light on low tier PCs; broadcast output
+        // is composed separately at the selected 480p/720p profile.
+        var fps = vertical ? 4 : 6;
+        var width = vertical ? 270 : 640;
+        var height = vertical ? 480 : 360;
         var hasExplicitCapture = scene.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background"));
         var capture = "desktop";
         CaptureTargetFallback = false;
@@ -190,7 +193,7 @@ internal sealed class ScenePreviewService : IDisposable
             current = nextLayer;
         }
         filters.Add($"[layer{current}]format=yuvj420p[sceneout]");
-        args.AddRange(["-filter_complex", string.Join(';', filters), "-map", "[sceneout]", "-an", "-c:v", "mjpeg", "-q:v", "8", "-f", "image2pipe", "pipe:1"]);
+        args.AddRange(["-filter_complex", string.Join(';', filters), "-map", "[sceneout]", "-an", "-threads", "1", "-c:v", "mjpeg", "-q:v", "8", "-f", "image2pipe", "pipe:1"]);
         return args;
     }
 
