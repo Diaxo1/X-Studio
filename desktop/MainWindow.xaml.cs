@@ -50,6 +50,11 @@ public partial class MainWindow : Window
     private double resizeAccumulatedX;
     private double resizeAccumulatedY;
     private BitmapSource? livePreviewFrame;
+    private readonly Dictionary<string, double> videoDurations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> probingVideoIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Slider> videoSliders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<Border, Point> layerDragOrigins = [];
+    private readonly Dictionary<Border, Point> sceneDragOrigins = [];
 
     public MainWindow()
     {
@@ -463,7 +468,7 @@ public partial class MainWindow : Window
             Sources = scene.Sources.Select(source => new SceneSource
             {
                 Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color,
-                X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled
+                X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled, PlaybackPositionSeconds = source.PlaybackPositionSeconds
             }).ToList()
         };
         scenes.Insert(scenes.IndexOf(scene) + 1, copy);
@@ -522,6 +527,7 @@ public partial class MainWindow : Window
                 Tag = scene.Id,
                 AllowDrop = true
             };
+            card.PreviewMouseLeftButtonDown += (_, e) => sceneDragOrigins[card] = e.GetPosition(card);
             card.PreviewMouseMove += SceneCardPreviewMouseMove;
             card.DragOver += SceneCardDragOver;
             card.Drop += SceneCardDrop;
@@ -617,10 +623,12 @@ public partial class MainWindow : Window
                 ToolTip = "Drag this row to change which source appears in front"
             };
             row.PreviewMouseMove += SceneLayerPreviewMouseMove;
+            row.PreviewMouseLeftButtonDown += (_, e) => layerDragOrigins[row] = e.GetPosition(row);
             row.DragOver += SceneLayerDragOver;
             row.Drop += SceneLayerDrop;
             var grid = new Grid();
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var copy = new StackPanel();
@@ -633,6 +641,29 @@ public partial class MainWindow : Window
             var back = MakeButton("Back", false); back.Height = 25; back.Margin = new Thickness(6, 0, 0, 0);
             back.Click += (_, _) => MoveSourceLayer(source.Id, false);
             Grid.SetColumn(back, 2); grid.Children.Add(back);
+            var isVideo = IsVideoFile(source.Content) && File.Exists(source.Content);
+            if (!isVideo)
+            {
+                var visibility = MakeButton(source.Enabled ? "Hide" : "Show", false); visibility.Height = 25; visibility.Margin = new Thickness(6, 0, 0, 0);
+                visibility.Click += (_, _) => { source.Enabled = !source.Enabled; SaveScenes(); RenderScenes(); _ = StartActiveScenePreviewAsync(); };
+                Grid.SetColumn(visibility, 3); grid.Children.Add(visibility);
+            }
+            if (isVideo)
+            {
+                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                Grid.SetRow(copy, 0); Grid.SetColumnSpan(copy, 4);
+                var controls = new DockPanel { Margin = new Thickness(0, 6, 0, 0), LastChildFill = true };
+                var toggle = MakeButton(source.Enabled ? "Stop" : "Play", false); toggle.Height = 24;
+                toggle.Click += (_, _) => { source.Enabled = !source.Enabled; SaveScenes(); RenderScenes(); _ = StartActiveScenePreviewAsync(); };
+                DockPanel.SetDock(toggle, Dock.Left); controls.Children.Add(toggle);
+                var seek = new Slider { Minimum = 0, Maximum = videoDurations.GetValueOrDefault(source.Id, 100), Value = Math.Clamp(source.PlaybackPositionSeconds, 0, videoDurations.GetValueOrDefault(source.Id, 100)), IsEnabled = videoDurations.ContainsKey(source.Id), Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, ToolTip = "Seek video" };
+                seek.ValueChanged += (_, _) => { if (seek.IsMouseCaptureWithin) source.PlaybackPositionSeconds = seek.Value; };
+                seek.PreviewMouseLeftButtonUp += (_, _) => { SaveScenes(); _ = StartActiveScenePreviewAsync(); };
+                videoSliders[source.Id] = seek;
+                controls.Children.Add(seek);
+                Grid.SetRow(controls, 1); Grid.SetColumnSpan(controls, 4); grid.Children.Add(controls);
+                if (!videoDurations.ContainsKey(source.Id) && probingVideoIds.Add(source.Id)) _ = ProbeVideoDurationAsync(source);
+            }
             row.Child = grid;
             SceneLayerList.Items.Add(row);
         }
@@ -653,8 +684,11 @@ public partial class MainWindow : Window
 
     private void SceneLayerPreviewMouseMove(object sender, MouseEventArgs e)
     {
-        if (e.LeftButton != MouseButtonState.Pressed || sender is not Border { Tag: LayerChoice layer }) return;
-        DragDrop.DoDragDrop((Border)sender, new DataObject("XStudio.SceneLayer", layer.SourceId), DragDropEffects.Move);
+        if (e.LeftButton != MouseButtonState.Pressed || sender is not Border row || row.Tag is not LayerChoice layer || !layerDragOrigins.TryGetValue(row, out var origin)) return;
+        if (e.OriginalSource is DependencyObject original && HasButtonAncestor(original, row)) return;
+        var point = e.GetPosition(row);
+        if (Math.Abs(point.X - origin.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(point.Y - origin.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        DragDrop.DoDragDrop(row, new DataObject("XStudio.SceneLayer", layer.SourceId), DragDropEffects.Move);
     }
 
     private void SceneLayerDragOver(object sender, DragEventArgs e) => e.Effects = e.Data.GetDataPresent("XStudio.SceneLayer") ? DragDropEffects.Move : DragDropEffects.None;
@@ -679,8 +713,45 @@ public partial class MainWindow : Window
 
     private void SceneCardPreviewMouseMove(object sender, MouseEventArgs e)
     {
-        if (e.LeftButton != MouseButtonState.Pressed || sender is not Border { Tag: string sceneId }) return;
-        DragDrop.DoDragDrop((Border)sender, new DataObject("XStudio.Scene", sceneId), DragDropEffects.Move);
+        if (e.LeftButton != MouseButtonState.Pressed || sender is not Border card || card.Tag is not string sceneId || !sceneDragOrigins.TryGetValue(card, out var origin)) return;
+        if (e.OriginalSource is DependencyObject original && HasButtonAncestor(original, card)) return;
+        var point = e.GetPosition(card);
+        if (Math.Abs(point.X - origin.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(point.Y - origin.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        DragDrop.DoDragDrop(card, new DataObject("XStudio.Scene", sceneId), DragDropEffects.Move);
+    }
+
+    private static bool HasButtonAncestor(DependencyObject element, DependencyObject stop)
+    {
+        for (var current = element; current is not null && current != stop; current = VisualTreeHelper.GetParent(current))
+            if (current is ButtonBase) return true;
+        return false;
+    }
+
+    private async Task ProbeVideoDurationAsync(SceneSource source)
+    {
+        try
+        {
+            var ffmpeg = Path.Combine(AppContext.BaseDirectory, "tools", "ffmpeg", "ffmpeg.exe");
+            if (!File.Exists(ffmpeg)) ffmpeg = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
+            var start = new ProcessStartInfo(ffmpeg) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
+            start.ArgumentList.Add("-hide_banner");
+            start.ArgumentList.Add("-i");
+            start.ArgumentList.Add(source.Content);
+            using var process = Process.Start(start);
+            if (process is null) return;
+            var error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var match = System.Text.RegularExpressions.Regex.Match(error, @"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)");
+            if (!match.Success || !double.TryParse(match.Groups[3].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds)) return;
+            var duration = int.Parse(match.Groups[1].Value) * 3600 + int.Parse(match.Groups[2].Value) * 60 + seconds;
+            Dispatcher.Invoke(() =>
+            {
+                videoDurations[source.Id] = duration;
+                if (videoSliders.TryGetValue(source.Id, out var slider)) { slider.Maximum = duration; slider.IsEnabled = true; }
+            });
+        }
+        catch { }
+        finally { probingVideoIds.Remove(source.Id); }
     }
 
     private void SceneCardDragOver(object sender, DragEventArgs e) => e.Effects = e.Data.GetDataPresent("XStudio.Scene") ? DragDropEffects.Move : DragDropEffects.None;
@@ -1777,3 +1848,4 @@ public partial class MainWindow : Window
     private sealed record PreviewResizeTag(SceneSource Source, bool Left, bool Top);
     private sealed record LayerChoice(string SourceId);
 }
+
