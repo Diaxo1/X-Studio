@@ -468,7 +468,7 @@ public partial class MainWindow : Window
             Sources = scene.Sources.Select(source => new SceneSource
             {
                 Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color,
-                X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled, PlaybackPositionSeconds = source.PlaybackPositionSeconds
+                X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled, PlaybackPositionSeconds = source.PlaybackPositionSeconds, WindowProcessId = source.WindowProcessId
             }).ToList()
         };
         scenes.Insert(scenes.IndexOf(scene) + 1, copy);
@@ -1207,7 +1207,7 @@ public partial class MainWindow : Window
         var window = captureTarget == "desktop" ? "desktop" : CaptureWindowService.FindByTitle(captureTarget).ToInt64().ToString();
         return string.Join("|", scene.Id, captureTarget, window, preferences.CameraDevice,
             string.Join(",", phoneInputs.OrderBy(item => item.Key).Select(item => $"{item.Key}:{item.Value}")),
-            string.Join(",", scene.Sources.Where(source => source.Enabled && source.Kind == "App").Select(source => $"{source.Id}:{CaptureWindowService.FindByTitle(source.Content).ToInt64()}")));
+            string.Join(",", scene.Sources.Where(source => source.Enabled && source.Kind == "App").Select(source => $"{source.Id}:{CaptureWindowService.FindBySource(source).ToInt64()}")));
     }
 
     private void RefreshLivePreviewInputs()
