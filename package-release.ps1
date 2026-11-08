@@ -9,7 +9,8 @@ $toolsRoot = Join-Path $projectRoot "tools"
 $packageRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) "AppData\Local\Microsoft\WinGet\Packages"
 
 function Find-PackageFile([string]$pattern, [string]$filename) {
-    $package = Get-ChildItem -LiteralPath $packageRoot -Directory -Filter $pattern | Sort-Object Name -Descending | Select-Object -First 1
+    if (!(Test-Path -LiteralPath $packageRoot -PathType Container)) { return $null }
+    $package = Get-ChildItem -LiteralPath $packageRoot -Directory -Filter $pattern -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
     if ($null -eq $package) { return $null }
     Get-ChildItem -LiteralPath $package.FullName -Recurse -File -Filter $filename | Select-Object -First 1 -ExpandProperty FullName
 }
