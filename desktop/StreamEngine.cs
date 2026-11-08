@@ -71,7 +71,7 @@ internal sealed class StreamEngine : IDisposable
         foreach (var source in scene.Sources.Where(source => source.Enabled && (source.Kind == "Video" || source.Kind == "Background" && source.Content != "transparent")))
             if (!File.Exists(source.Content)) throw new InvalidOperationException($"The media for {source.Name} could not be found. Edit the scene source and choose its file again.");
         foreach (var source in scene.Sources.Where(source => source.Enabled && source.Kind == "App"))
-            if (CaptureWindowService.FindByTitle(source.Content) == IntPtr.Zero) throw new InvalidOperationException($"The app window for {source.Name} is not open. Reopen it or edit the source title.");
+            if (CaptureWindowService.FindBySource(source) == IntPtr.Zero) throw new InvalidOperationException($"X Studio couldn't resolve the selected window for {source.Name}. Edit the source and choose the open app again.");
         foreach (var destination in destinations) ValidateDestination(destination);
 
         var encoderList = await RunAndCollectAsync(["-hide_banner", "-encoders"], 10);
@@ -211,7 +211,7 @@ internal sealed class StreamEngine : IDisposable
             }
             else if (source.Kind is "Display" or "App")
             {
-                var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindByTitle(source.Content);
+                var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindBySource(source);
                 captureInputs[source.Id] = nextInput++;
                 args.AddRange(["-thread_queue_size", "512", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", window == IntPtr.Zero ? "desktop" : CaptureWindowService.ToFfmpegInput(window)]);
             }
@@ -339,7 +339,7 @@ internal sealed class StreamEngine : IDisposable
         return string.Join(Environment.NewLine, lines);
     }
 
-    private static SceneSource CloneSource(SceneSource source) => new() { Id = source.Id, Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color, X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled, PlaybackPositionSeconds = source.PlaybackPositionSeconds };
+    private static SceneSource CloneSource(SceneSource source) => new() { Id = source.Id, Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color, X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled, PlaybackPositionSeconds = source.PlaybackPositionSeconds, WindowProcessId = source.WindowProcessId };
 
     private static void CleanupTextFiles(EngineConfig config)
     {
