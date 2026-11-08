@@ -11,6 +11,9 @@ internal sealed class SceneEditorWindow : Window
     private readonly ComboBox formatBox = new();
     private readonly ComboBox templateBox = new();
     private readonly StackPanel sourceList = new();
+    private readonly Canvas templatePreview = new() { Width = 290, Height = 164, ClipToBounds = true };
+    private readonly TextBlock templateSummary = new();
+    private bool updatingTemplates;
     private readonly List<SceneSource> sources;
     private readonly StudioScene? original;
 
@@ -38,17 +41,25 @@ internal sealed class SceneEditorWindow : Window
         root.Children.Add(new TextBlock { Text = "Set the canvas and manage the sources layered into this scene.", Foreground = Brush("#999A9E"), FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 16) });
         AddField(root, "SCENE NAME", nameBox);
         nameBox.Text = scene?.Name ?? "New scene";
-        AddField(root, "CANVAS FORMAT", formatBox);
         formatBox.Items.Add("Wide · 16:9");
         formatBox.Items.Add("Vertical · 9:16");
         formatBox.SelectedItem = scene?.Format ?? "Wide · 16:9";
         if (scene is null)
         {
+            root.Children.Add(new TextBlock { Text = "TEMPLATE CANVAS", Foreground = Brush("#C7C7C5"), FontSize = 10, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 5) });
+            var formatTabs = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 13) };
+            var wideTab = Button("Wide · 16:9", false); wideTab.Width = 135;
+            var verticalTab = Button("TikTok · 9:16", false); verticalTab.Width = 135; verticalTab.Margin = new Thickness(8, 0, 0, 0);
+            wideTab.Click += (_, _) => SetTemplateFormat("Wide · 16:9");
+            verticalTab.Click += (_, _) => SetTemplateFormat("Vertical · 9:16");
+            formatTabs.Children.Add(wideTab); formatTabs.Children.Add(verticalTab); root.Children.Add(formatTabs);
             AddField(root, "START FROM TEMPLATE", templateBox);
-            foreach (var template in SceneTemplate.All) templateBox.Items.Add(template.Name);
-            templateBox.SelectedItem = "Blank";
+            root.Children.Add(new Border { Background = Brush("#111214"), BorderBrush = Brush("#38393F"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(7), Padding = new Thickness(8), HorizontalAlignment = HorizontalAlignment.Left, Child = templatePreview });
+            templateSummary.Foreground = Brush("#999A9E"); templateSummary.FontSize = 10; templateSummary.TextWrapping = TextWrapping.Wrap; templateSummary.Margin = new Thickness(0, 6, 0, 14); root.Children.Add(templateSummary);
             templateBox.SelectionChanged += (_, _) => ApplySelectedTemplate();
+            SetTemplateFormat("Wide · 16:9");
         }
+        else AddField(root, "CANVAS FORMAT", formatBox);
 
         var sourceHeader = new DockPanel { Margin = new Thickness(0, 1, 0, 8) };
         var sourceTitle = new TextBlock { Text = "SOURCES", Foreground = Brush("#C7C7C5"), FontSize = 10, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
@@ -61,7 +72,7 @@ internal sealed class SceneEditorWindow : Window
         root.Children.Add(sourceHeader);
         root.Children.Add(sourceList);
         RenderSources();
-        root.Children.Add(new TextBlock { Text = "Desktop is the base layer. Add camera, image, or text overlays above it. Source positions use canvas percentages.", Foreground = Brush("#999A9E"), FontSize = 10, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 16) });
+        root.Children.Add(new TextBlock { Text = "Scene layers stack from back to front. Add an empty or image/video background, then full display, app windows, phone cast, camera, images, or text. Source position, size, and crop use canvas percentages.", Foreground = Brush("#999A9E"), FontSize = 10, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 16) });
 
         var actions = new DockPanel { LastChildFill = false };
         root.Children.Add(actions);
@@ -78,25 +89,61 @@ internal sealed class SceneEditorWindow : Window
 
     private void ApplySelectedTemplate()
     {
+        if (updatingTemplates) return;
         var template = SceneTemplate.All.FirstOrDefault(item => item.Name == templateBox.SelectedItem?.ToString());
         if (template is null) return;
+        updatingTemplates = true;
         formatBox.SelectedItem = template.Format;
+        updatingTemplates = false;
         sources.Clear();
         sources.AddRange(template.Sources.Select(CloneSource));
+        DrawTemplatePreview(template.Format, template.Sources);
+        templateSummary.Text = $"{template.Name} · {template.Format} · {template.Sources.Count} layers\nCapture, background, phone, camera, and text layers stay editable after you create the scene.";
         RenderSources();
+    }
+
+    private void SetTemplateFormat(string format)
+    {
+        updatingTemplates = true;
+        formatBox.SelectedItem = format;
+        templateBox.Items.Clear();
+        foreach (var template in SceneTemplate.All.Where(item => item.Format == format)) templateBox.Items.Add(template.Name);
+        var preferred = format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase) ? "Vertical live" : "Blank";
+        templateBox.SelectedItem = templateBox.Items.Cast<string>().FirstOrDefault(item => item == preferred) ?? templateBox.Items.Cast<string>().FirstOrDefault();
+        updatingTemplates = false;
+        ApplySelectedTemplate();
+    }
+
+    private void DrawTemplatePreview(string format, IReadOnlyList<SceneSource> templateSources)
+    {
+        templatePreview.Children.Clear();
+        templatePreview.Background = Brush("#111214");
+        var viewport = format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase)
+            ? new Rect((templatePreview.Width - templatePreview.Height * 9 / 16) / 2, 0, templatePreview.Height * 9 / 16, templatePreview.Height)
+            : new Rect(0, (templatePreview.Height - templatePreview.Width * 9 / 16) / 2, templatePreview.Width, templatePreview.Width * 9 / 16);
+        var stage = new Border { Width = viewport.Width, Height = viewport.Height, Background = Brush("#202126"), BorderBrush = Brush("#55565C"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4) };
+        Canvas.SetLeft(stage, viewport.X); Canvas.SetTop(stage, viewport.Y); templatePreview.Children.Add(stage);
+        foreach (var source in templateSources.Where(item => item.Enabled))
+        {
+            var width = viewport.Width * source.Width / 100;
+            var height = source.Kind == "Background" ? viewport.Height : source.Height > 0 ? viewport.Height * source.Height / 100 : width / (source.Kind == "Phone" ? 9d / 16d : 16d / 9d);
+            var tile = new Border { Width = Math.Max(8, width), Height = Math.Max(8, height), Background = Brush(source.Kind switch { "Text" => "#DDF04455", "Background" => "#151619", "Camera" => "#B02B333D", "Phone" => "#A9401F2A", _ => "#B028303A" }), BorderBrush = Brush(source.Kind == "Text" ? "#FF6978" : "#77787E"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(3), Child = new TextBlock { Text = source.Kind == "Text" ? source.Content : source.Kind == "Display" ? "DISPLAY" : source.Kind == "App" ? "APP WINDOW" : source.Kind == "Phone" ? "PHONE CAST" : source.Kind == "Camera" ? "CAMERA" : source.Kind == "Background" ? "BACKGROUND" : "VIDEO / IMAGE", Foreground = Brushes.White, FontSize = 8, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3) } };
+            Canvas.SetLeft(tile, viewport.X + viewport.Width * source.X / 100); Canvas.SetTop(tile, viewport.Y + viewport.Height * source.Y / 100); templatePreview.Children.Add(tile);
+        }
     }
 
     private void AddSource(object sender, RoutedEventArgs e)
     {
-        if (sources.Any(source => source.Kind == "Camera"))
-        {
-            MessageBox.Show(this, "This scene already has a camera source. Choose the camera device in Settings and keep one camera layer per scene.", "Camera source already added", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
         var scene = new StudioScene { Name = nameBox.Text.Trim() is { Length: > 0 } n ? n : "New scene", Format = formatBox.SelectedItem?.ToString() ?? "Wide · 16:9" };
         var editor = new SceneSourceEditorWindow(scene) { Owner = this };
         if (editor.ShowDialog() != true || editor.Result is null) return;
-        sources.Add(editor.Result);
+        if (editor.Result.Kind == "Camera" && sources.Any(source => source.Kind == "Camera"))
+        {
+            MessageBox.Show(this, "This scene already has a camera source. Choose one camera layer per scene.", "Camera source already added", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (editor.Result.Kind == "Background") sources.Insert(0, editor.Result);
+        else sources.Add(editor.Result);
         RenderSources();
     }
 
@@ -106,7 +153,12 @@ internal sealed class SceneEditorWindow : Window
         var editor = new SceneSourceEditorWindow(scene, source) { Owner = this };
         if (editor.ShowDialog() != true || editor.Result is null) return;
         var index = sources.FindIndex(item => item.Id == source.Id);
-        if (index >= 0) sources[index] = editor.Result;
+        if (index >= 0)
+        {
+            sources.RemoveAt(index);
+            if (editor.Result.Kind == "Background") sources.Insert(0, editor.Result);
+            else sources.Insert(Math.Min(index, sources.Count), editor.Result);
+        }
         RenderSources();
     }
 
@@ -162,7 +214,7 @@ internal sealed class SceneEditorWindow : Window
     private static SceneSource CloneSource(SceneSource source) => new()
     {
         Id = source.Id, Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color,
-        X = source.X, Y = source.Y, Width = source.Width, FontSize = source.FontSize, Enabled = source.Enabled
+        X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled
     };
 
     private static void AddField(Panel parent, string title, Control field)

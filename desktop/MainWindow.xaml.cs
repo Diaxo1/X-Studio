@@ -28,6 +28,9 @@ public partial class MainWindow : Window
     private bool syncingDevices;
     private bool refreshingScenePicker;
     private bool verticalPreview;
+    private bool cropPreviewMode;
+    private string cropEdge = string.Empty;
+    private double cropStartValue;
     private bool restartingPreview;
     private bool previewRestartPending;
     private bool preparingBroadcast;
@@ -39,6 +42,7 @@ public partial class MainWindow : Window
     private double dragSourceY;
     private SceneSource? resizingPreviewSource;
     private double resizeStartWidth;
+    private double resizeStartSourceHeight;
     private double resizeStartX;
     private double resizeStartY;
     private double resizeStartHeightPercent;
@@ -459,7 +463,7 @@ public partial class MainWindow : Window
             Sources = scene.Sources.Select(source => new SceneSource
             {
                 Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color,
-                X = source.X, Y = source.Y, Width = source.Width, FontSize = source.FontSize, Enabled = source.Enabled
+                X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled
             }).ToList()
         };
         scenes.Insert(scenes.IndexOf(scene) + 1, copy);
@@ -712,14 +716,15 @@ public partial class MainWindow : Window
     {
         var scene = scenes.FirstOrDefault(item => item.Id == activeSceneId);
         if (scene is null) return;
-        if (scene.Sources.Any(source => source.Kind == "Camera"))
-        {
-            MessageBox.Show(this, "This scene already has a camera layer. Drag it in the preview or edit it in Scene Library.", "Camera already added", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
         var editor = new SceneSourceEditorWindow(scene) { Owner = this };
         if (editor.ShowDialog() != true || editor.Result is null) return;
-        scene.Sources.Add(editor.Result); SaveScenes(); RenderScenes(); _ = StartActiveScenePreviewAsync();
+        if (editor.Result.Kind == "Camera" && scene.Sources.Any(source => source.Kind == "Camera"))
+        {
+            MessageBox.Show(this, "This scene already has a camera source. Keep one camera layer per scene.", "Camera already added", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (editor.Result.Kind == "Background") scene.Sources.Insert(0, editor.Result); else scene.Sources.Add(editor.Result);
+        SaveScenes(); RenderScenes(); _ = StartActiveScenePreviewAsync();
         if (editor.Result.Kind == "Phone")
         {
             if (editor.Result.Content == "Android") _ = StartAndroidFromDeskAsync();
@@ -754,7 +759,11 @@ public partial class MainWindow : Window
 
     private void showSceneTemplateToast(string name) => MessageBox.Show(this, $"‘{name}’ is now available in the Templates picker when you create a scene.", "Template saved", MessageBoxButton.OK, MessageBoxImage.Information);
 
-    private static StudioScene NewScene(string name, string format) => new() { Name = name, Format = format };
+    private static StudioScene NewScene(string name, string format) => new()
+    {
+        Name = name, Format = format, Template = "Blank",
+        Sources = [new SceneSource { Kind = "Background", Name = "Transparent canvas", Content = "transparent", X = 0, Y = 0, Width = 100, Height = 100 }]
+    };
 
     private void AddDestinationClick(object sender, RoutedEventArgs e)
     {
@@ -1093,7 +1102,9 @@ public partial class MainWindow : Window
                 PreviewStatusText.Text = "OPENING LIVE PREVIEW · 6 FPS";
                 var phoneInputs = GetPhoneCaptureInputs(scene);
                 previewInputSignature = GetPreviewInputSignature(scene, phoneInputs);
-                var target = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
+                var target = scene.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background"))
+                    ? "desktop"
+                    : preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
                 await scenePreview.StartAsync(scene, target, string.IsNullOrWhiteSpace(preferences.CameraDevice) ? null : preferences.CameraDevice, phoneInputs);
                 if (scenePreview.CaptureTargetFallback)
                     PreviewStatusText.Text = "WINDOW NOT FOUND · SHOWING DESKTOP UNTIL IT OPENS";
@@ -1124,7 +1135,8 @@ public partial class MainWindow : Window
         var captureTarget = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
         var window = captureTarget == "desktop" ? "desktop" : CaptureWindowService.FindByTitle(captureTarget).ToInt64().ToString();
         return string.Join("|", scene.Id, captureTarget, window, preferences.CameraDevice,
-            string.Join(",", phoneInputs.OrderBy(item => item.Key).Select(item => $"{item.Key}:{item.Value}")));
+            string.Join(",", phoneInputs.OrderBy(item => item.Key).Select(item => $"{item.Key}:{item.Value}")),
+            string.Join(",", scene.Sources.Where(source => source.Enabled && source.Kind == "App").Select(source => $"{source.Id}:{CaptureWindowService.FindByTitle(source.Content).ToInt64()}")));
     }
 
     private void RefreshLivePreviewInputs()
@@ -1178,7 +1190,10 @@ public partial class MainWindow : Window
         var viewport = GetPreviewViewport(vertical, width, height);
         var lowBandwidth = (QualityCombo?.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "480p30";
         var outputSize = vertical ? (lowBandwidth ? "480 × 854" : "720 × 1280") : (lowBandwidth ? "854 × 480" : "1280 × 720");
-        var capture = LiveCaptureTargetCombo?.SelectedItem?.ToString() ?? "Full screen · entire desktop";
+        var sceneCaptureSources = scene?.Sources.Where(source => source.Enabled && (source.Kind is "Display" or "App")).ToList() ?? [];
+        var sceneOwnsCanvas = scene?.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background")) == true;
+        var capture = sceneCaptureSources.Count > 0 ? string.Join(" + ", sceneCaptureSources.Select(source => source.Name))
+            : sceneOwnsCanvas ? "EMPTY SCENE CANVAS" : LiveCaptureTargetCombo?.SelectedItem?.ToString() ?? "Full screen · entire desktop";
         var stageBorder = new Border
         {
             Width = viewport.Width, Height = viewport.Height, Background = Brush("#090A0C"),
@@ -1220,8 +1235,8 @@ public partial class MainWindow : Window
                             Children =
                             {
                                 new Border { Width = 42, Height = 30, CornerRadius = new CornerRadius(5), Background = Brush("#25272D"), BorderBrush = Brush("#55565C"), BorderThickness = new Thickness(1), HorizontalAlignment = HorizontalAlignment.Center, Child = new TextBlock { Text = "▣", FontSize = 16, Foreground = Brush("#BFC0C4"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center } },
-                                new TextBlock { Text = capture.StartsWith("Window", StringComparison.OrdinalIgnoreCase) ? "GAME / WINDOW CAPTURE" : "FULL SCREEN CAPTURE", Foreground = Brush("#D5D5D7"), FontSize = 11, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 9, 0, 3) },
-                                new TextBlock { Text = "Connecting to live capture…", Foreground = Brush("#9A9BA0"), FontSize = 9, HorizontalAlignment = HorizontalAlignment.Center }
+                                new TextBlock { Text = sceneCaptureSources.Count > 0 ? "CONNECTING TO SCENE CAPTURE" : sceneOwnsCanvas ? "EMPTY CANVAS · ADD DISPLAY, APP, PHONE, CAMERA, OR TEXT" : capture.StartsWith("Window", StringComparison.OrdinalIgnoreCase) ? "GAME / WINDOW CAPTURE" : "FULL SCREEN CAPTURE", Foreground = Brush("#D5D5D7"), FontSize = 11, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 9, 0, 3), TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center },
+                                new TextBlock { Text = sceneCaptureSources.Count > 0 ? string.Join(" · ", sceneCaptureSources.Select(source => source.Name)) : sceneOwnsCanvas ? "Choose + Source to arrange this scene." : "Connecting to live capture…", Foreground = Brush("#9A9BA0"), FontSize = 9, HorizontalAlignment = HorizontalAlignment.Center, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center }
                             }
                         },
                         new Border { VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(8), Padding = new Thickness(7, 4, 7, 4), CornerRadius = new CornerRadius(4), Background = Brush("#222327"), Child = new TextBlock { Text = capture, Foreground = Brush("#B9BABE"), FontSize = 9, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = Math.Max(60, viewport.Width * .42) } }
@@ -1306,7 +1321,7 @@ public partial class MainWindow : Window
         var width = Math.Clamp(canvasWidth * source.Width / 100, 14, canvasWidth);
         var aspect = 16d / 9d;
         if (source.Kind == "Phone") aspect = 9d / 16d;
-        else if (source.Kind == "Image" && File.Exists(source.Content))
+        else if ((source.Kind == "Image" || source.Kind == "Background" && !source.Content.Equals("transparent", StringComparison.OrdinalIgnoreCase)) && File.Exists(source.Content) && !Path.GetExtension(source.Content).Equals(".mp4", StringComparison.OrdinalIgnoreCase))
         {
             try
             {
@@ -1314,6 +1329,7 @@ public partial class MainWindow : Window
             }
             catch { }
         }
+        aspect *= Math.Max(.05, 1 - (source.CropLeft + source.CropRight) / 100) / Math.Max(.05, 1 - (source.CropTop + source.CropBottom) / 100);
         double height;
         if (source.Kind == "Text")
         {
@@ -1322,7 +1338,8 @@ public partial class MainWindow : Window
             var lines = Math.Max(1, wrapped.Count(character => character == '\n') + 1);
             height = Math.Max(20, canvasHeight * source.FontSize * lines * 1.25 / (scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase) ? 1280 : 720));
         }
-        else height = width / aspect;
+        else if (source.Kind == "Background") height = canvasHeight;
+        else height = source.Height > 0 ? canvasHeight * source.Height / 100 : width / aspect;
         height = Math.Min(Math.Max(18, height), Math.Max(canvasHeight, height));
         var x = Math.Clamp(viewport.X + canvasWidth * source.X / 100, viewport.X, viewport.Right - Math.Min(width, canvasWidth));
         var y = Math.Clamp(viewport.Y + canvasHeight * source.Y / 100, viewport.Y, Math.Max(viewport.Y, viewport.Bottom - Math.Min(height, canvasHeight)));
@@ -1341,7 +1358,11 @@ public partial class MainWindow : Window
                 Child = new TextBlock { Text = source.Content, Foreground = Brush(source.Color), FontSize = Math.Clamp(source.FontSize * fontScale, 8, 36), FontWeight = FontWeights.Bold, TextWrapping = TextWrapping.Wrap }
             };
         }
-        else if (source.Kind == "Image" && File.Exists(source.Content))
+        else if (source.Kind == "Background" && source.Content.Equals("transparent", StringComparison.OrdinalIgnoreCase))
+        {
+            content = new Border { Background = Brush("#090A0C"), BorderBrush = Brush("#38393F"), BorderThickness = new Thickness(1) };
+        }
+        else if ((source.Kind == "Image" || source.Kind == "Background" && !source.Content.Equals("transparent", StringComparison.OrdinalIgnoreCase)) && File.Exists(source.Content) && !IsVideoFile(source.Content))
         {
             try
             {
@@ -1354,7 +1375,12 @@ public partial class MainWindow : Window
         {
             var label = source.Kind == "Camera"
                 ? string.IsNullOrWhiteSpace(preferences.CameraDevice) ? "CAMERA · CHOOSE DEVICE" : livePreviewFrame is null ? "CAMERA · CONNECTING" : "CAMERA · PREVIEW UNAVAILABLE"
-                : source.Kind == "Phone" ? $"{source.Content.ToUpperInvariant()} · WAITING FOR CAST" : source.Kind.ToUpperInvariant();
+                : source.Kind == "Phone" ? $"{source.Content.ToUpperInvariant()} · WAITING FOR CAST"
+                : source.Kind == "App" ? $"APP · {source.Content}"
+                : source.Kind == "Display" ? "FULL DISPLAY · CONNECTING"
+                : source.Kind == "Video" ? "VIDEO · CONNECTING"
+                : source.Kind == "Background" ? "BACKGROUND · CONNECTING"
+                : source.Kind.ToUpperInvariant();
             content = MakeSourceBadge(label, bounds.Width, bounds.Height, source.Kind is "Camera" or "Phone" ? "#F04455" : "#66676D");
         }
         var layer = new Border { Width = bounds.Width, Height = bounds.Height, Child = content, Background = Brushes.Transparent };
@@ -1365,6 +1391,8 @@ public partial class MainWindow : Window
         }
         return layer;
     }
+
+    private static bool IsVideoFile(string path) => Path.GetExtension(path).ToLowerInvariant() is ".mp4" or ".mov" or ".mkv" or ".webm" or ".avi" or ".m4v";
 
     private void AddResizeHandle(Canvas canvas, SceneSource source, Rect bounds, bool left, bool top)
     {
@@ -1387,7 +1415,7 @@ public partial class MainWindow : Window
         if (sender is not Thumb { Tag: PreviewResizeTag handle }) return;
         selectedPreviewSourceId = handle.Source.Id;
         resizingPreviewSource = handle.Source;
-        resizeStartWidth = handle.Source.Width; resizeStartX = handle.Source.X; resizeStartY = handle.Source.Y;
+        resizeStartWidth = handle.Source.Width; resizeStartSourceHeight = handle.Source.Height; resizeStartX = handle.Source.X; resizeStartY = handle.Source.Y;
         resizeAccumulatedX = resizeAccumulatedY = 0;
         var scene = scenes.First(scene => scene.Id == activeSceneId);
         var viewport = GetPreviewViewport(scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase), ScenePreviewCanvas.ActualWidth, ScenePreviewCanvas.ActualHeight);
@@ -1406,11 +1434,10 @@ public partial class MainWindow : Window
         var vertical = handle.Top ? -resizeAccumulatedY : resizeAccumulatedY;
         var widthScale = Math.Max(.05, (resizeStartBounds.Width + horizontal) / Math.Max(1, resizeStartBounds.Width));
         var heightScale = Math.Max(.05, (resizeStartBounds.Height + vertical) / Math.Max(1, resizeStartBounds.Height));
-        var scale = source.Kind == "Text" || Math.Abs(horizontal) >= Math.Abs(vertical) ? widthScale : heightScale;
-        source.Width = Math.Clamp(resizeStartWidth * scale, 2, 100);
-        var heightDelta = resizeStartHeightPercent * (scale - 1);
+        source.Width = Math.Clamp(resizeStartWidth * widthScale, 2, 100);
+        source.Height = Math.Clamp(resizeStartHeightPercent * heightScale, 1, 100);
         if (handle.Left) source.X = Math.Clamp(resizeStartX + resizeStartWidth - source.Width, 0, 100 - source.Width);
-        source.Y = Math.Clamp(resizeStartY + (handle.Top ? -heightDelta : heightDelta), 0, 99);
+        if (handle.Top) source.Y = Math.Clamp(resizeStartY + resizeStartHeightPercent - source.Height, 0, 100 - source.Height);
         UpdatePreviewTransform(canvas, source);
     }
 
@@ -1478,7 +1505,7 @@ public partial class MainWindow : Window
         }
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key == Key.R)
         {
-            source.X = 8; source.Y = 8; source.Width = 42;
+            source.X = 8; source.Y = 8; source.Width = 42; source.Height = 0;
             SaveScenes(); DrawActiveScenePreview(); _ = StartActiveScenePreviewAsync(); e.Handled = true; return;
         }
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key == Key.D)
@@ -1537,6 +1564,21 @@ public partial class MainWindow : Window
         selectedPreviewSourceId = source.Id;
         if (e.ClickCount > 1) { EditActiveSource(source); e.Handled = true; return; }
         draggedPreviewSource = source; dragOrigin = e.GetPosition(canvas); dragSourceX = source.X; dragSourceY = source.Y;
+        if (cropPreviewMode)
+        {
+            var scene = scenes.FirstOrDefault(item => item.Id == activeSceneId);
+            if (scene is not null)
+            {
+                var viewport = GetPreviewViewport(scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase), canvas.ActualWidth, canvas.ActualHeight);
+                var bounds = GetPreviewBounds(scene, source, viewport);
+                var point = e.GetPosition(canvas);
+                var x = Math.Clamp((point.X - bounds.Left) / Math.Max(1, bounds.Width), 0, 1);
+                var y = Math.Clamp((point.Y - bounds.Top) / Math.Max(1, bounds.Height), 0, 1);
+                cropEdge = Math.Min(Math.Min(x, 1 - x), Math.Min(y, 1 - y)) == Math.Min(x, 1 - x)
+                    ? (x < .5 ? "left" : "right") : (y < .5 ? "top" : "bottom");
+                cropStartValue = cropEdge switch { "left" => source.CropLeft, "right" => source.CropRight, "top" => source.CropTop, _ => source.CropBottom };
+            }
+        }
         canvas.CaptureMouse(); DrawActiveScenePreview(); e.Handled = true;
     }
 
@@ -1548,6 +1590,20 @@ public partial class MainWindow : Window
         var scene = scenes.FirstOrDefault(item => item.Id == activeSceneId);
         if (scene is null) return;
         var viewport = GetPreviewViewport(scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase), canvas.ActualWidth, canvas.ActualHeight);
+        if (cropPreviewMode && cropEdge.Length > 0)
+        {
+            var bounds = GetPreviewBounds(scene, draggedPreviewSource, viewport);
+            var deltaX = (point.X - dragOrigin.X) / Math.Max(1, bounds.Width) * 100;
+            var deltaY = (point.Y - dragOrigin.Y) / Math.Max(1, bounds.Height) * 100;
+            var delta = cropEdge is "left" or "right" ? deltaX : deltaY;
+            var value = Math.Clamp(cropStartValue + (cropEdge is "left" or "top" ? delta : -delta), 0, 90);
+            if (cropEdge == "left") draggedPreviewSource.CropLeft = Math.Min(value, 94 - draggedPreviewSource.CropRight);
+            else if (cropEdge == "right") draggedPreviewSource.CropRight = Math.Min(value, 94 - draggedPreviewSource.CropLeft);
+            else if (cropEdge == "top") draggedPreviewSource.CropTop = Math.Min(value, 94 - draggedPreviewSource.CropBottom);
+            else draggedPreviewSource.CropBottom = Math.Min(value, 94 - draggedPreviewSource.CropTop);
+            UpdatePreviewTransform(canvas, draggedPreviewSource);
+            return;
+        }
         var maxX = element is null ? 100 - draggedPreviewSource.Width : 100 - element.Width / viewport.Width * 100;
         var maxY = element is null ? 99 : 100 - element.Height / viewport.Height * 100;
         draggedPreviewSource.X = Math.Clamp(dragSourceX + (point.X - dragOrigin.X) / viewport.Width * 100, 0, Math.Max(0, maxX));
@@ -1561,7 +1617,16 @@ public partial class MainWindow : Window
         canvas.ReleaseMouseCapture();
         var scene = scenes.FirstOrDefault(item => item.Id == activeSceneId);
         if (scene is not null) SaveScenes();
-        draggedPreviewSource = null; DrawActiveScenePreview(); _ = StartActiveScenePreviewAsync();
+        draggedPreviewSource = null; cropEdge = string.Empty; DrawActiveScenePreview(); _ = StartActiveScenePreviewAsync();
+    }
+
+    private void ToggleCropModeClick(object sender, RoutedEventArgs e)
+    {
+        cropPreviewMode = !cropPreviewMode;
+        CropModeButton.Content = cropPreviewMode ? "Crop: on · drag edge" : "Crop: off";
+        CropModeButton.Background = Brush(cropPreviewMode ? "#321C21" : "#222327");
+        CropModeButton.Foreground = Brush(cropPreviewMode ? "#FF6978" : "#D3D3D5");
+        PreviewStatusText.Text = cropPreviewMode ? "CROP MODE · SELECT A SOURCE AND DRAG ITS EDGE" : "LIVE SCENE PREVIEW";
     }
 
     private static SceneSource? FindTaggedSource(DependencyObject? element)
@@ -1581,7 +1646,12 @@ public partial class MainWindow : Window
         var editor = new SceneSourceEditorWindow(scene, source) { Owner = this };
         if (editor.ShowDialog() != true || editor.Result is null) return;
         var index = scene.Sources.FindIndex(item => item.Id == source.Id);
-        if (index >= 0) scene.Sources[index] = editor.Result;
+        if (index >= 0)
+        {
+            scene.Sources.RemoveAt(index);
+            if (editor.Result.Kind == "Background") scene.Sources.Insert(0, editor.Result);
+            else scene.Sources.Insert(Math.Min(index, scene.Sources.Count), editor.Result);
+        }
         SaveScenes(); RenderScenes();
         _ = StartActiveScenePreviewAsync();
     }
@@ -1642,18 +1712,19 @@ public partial class MainWindow : Window
             {
                 FrameworkElement box;
                 var boxWidth = Math.Max(13, width * source.Width / 100);
-                if (source.Kind == "Image" && File.Exists(source.Content))
+                var boxHeight = source.Kind == "Background" ? height : source.Height > 0 ? height * source.Height / 100 : Math.Max(12, height * .27);
+                if ((source.Kind == "Image" || source.Kind == "Background" && !source.Content.Equals("transparent", StringComparison.OrdinalIgnoreCase)) && File.Exists(source.Content) && !Path.GetExtension(source.Content).Equals(".mp4", StringComparison.OrdinalIgnoreCase))
                 {
                     try
                     {
                         var bitmap = new BitmapImage();
                         bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.UriSource = new Uri(source.Content); bitmap.DecodePixelWidth = Math.Max(32, (int)boxWidth); bitmap.EndInit(); bitmap.Freeze();
-                        var image = new Image { Source = bitmap, Width = boxWidth, Height = Math.Max(12, height * .36), Stretch = Stretch.UniformToFill, ClipToBounds = true };
+                        var image = new Image { Source = bitmap, Width = boxWidth, Height = boxHeight, Stretch = Stretch.UniformToFill, ClipToBounds = true };
                         box = image;
                     }
                     catch { box = MakeSourceBadge("IMG", boxWidth, height, "#66676D"); }
                 }
-                else box = MakeSourceBadge(source.Kind switch { "Camera" => "CAM", "Phone" => "PHONE", _ => "IMG" }, boxWidth, height, source.Kind is "Camera" or "Phone" ? "#F04455" : "#66676D");
+                else box = new Border { Width = boxWidth, Height = boxHeight, Background = Brush(source.Kind switch { "Background" when source.Content == "transparent" => "#151619", "Background" => "#38313A", "Display" => "#282B31", "App" => "#343039", "Camera" or "Phone" => "#47232A", "Video" => "#303447", _ => "#33343A" }), BorderBrush = Brush(source.Kind is "Camera" or "Phone" ? "#F04455" : "#77787E"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(2), Child = new TextBlock { Text = source.Kind switch { "Display" => "FULL DISPLAY", "App" => "APP · " + source.Content, "Camera" => "CAMERA", "Phone" => "PHONE CAST", "Video" => "VIDEO", "Background" => source.Content == "transparent" ? "TRANSPARENT CANVAS" : "BACKGROUND", _ => "IMAGE" }, Foreground = Brushes.White, FontSize = 8, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2) } };
                 Canvas.SetLeft(box, left); Canvas.SetTop(box, top); canvas.Children.Add(box);
             }
         }

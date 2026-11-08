@@ -21,6 +21,11 @@ public sealed class SceneSource
     public double X { get; set; } = 8;
     public double Y { get; set; } = 8;
     public double Width { get; set; } = 42;
+    public double Height { get; set; }
+    public double CropLeft { get; set; }
+    public double CropTop { get; set; }
+    public double CropRight { get; set; }
+    public double CropBottom { get; set; }
     public int FontSize { get; set; } = 48;
     public bool Enabled { get; set; } = true;
 }
@@ -33,24 +38,27 @@ internal sealed record SceneTemplate(string Name, string Format, IReadOnlyList<S
         Sources = Sources.Select(source => new SceneSource
         {
             Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color,
-            X = source.X, Y = source.Y, Width = source.Width, FontSize = source.FontSize
+            X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize
         }).ToList()
     };
 
     private static readonly List<SceneTemplate> templates =
     [
-        new("Blank", "Wide · 16:9", []),
+        new("Blank", "Wide · 16:9", [ new() { Kind = "Background", Name = "Transparent canvas", Content = "transparent", X = 0, Y = 0, Width = 100 } ]),
         new("Gameplay", "Wide · 16:9", [
+            new() { Kind = "Display", Name = "Game / display", Content = "desktop", X = 0, Y = 0, Width = 100 },
             new() { Name = "Live label", Content = "LIVE", Color = "#FF6978", X = 5, Y = 6, Width = 30, FontSize = 24 },
             new() { Name = "Stream title", Content = "YOUR TITLE HERE", X = 5, Y = 78, Width = 58, FontSize = 36 },
             new() { Kind = "Camera", Name = "Face camera", Content = "Settings camera", X = 73, Y = 7, Width = 24 }
         ]),
         new("Just chatting", "Wide · 16:9", [
+            new() { Kind = "Display", Name = "Display layer", Content = "desktop", X = 0, Y = 0, Width = 100 },
             new() { Name = "Show title", Content = "LET'S TALK", X = 6, Y = 8, Width = 45, FontSize = 32 },
             new() { Name = "Topic", Content = "Add today's topic", Color = "#FF8790", X = 6, Y = 84, Width = 50, FontSize = 23 },
             new() { Kind = "Camera", Name = "Camera", Content = "Settings camera", X = 62, Y = 22, Width = 33 }
         ]),
         new("Vertical live", "Vertical · 9:16", [
+            new() { Kind = "Display", Name = "Display / game", Content = "desktop", X = 0, Y = 0, Width = 100 },
             new() { Name = "Live label", Content = "LIVE NOW", Color = "#FF6978", X = 7, Y = 7, Width = 55, FontSize = 24 },
             new() { Name = "Caption", Content = "YOUR STREAM TITLE", X = 7, Y = 78, Width = 75, FontSize = 30 },
             new() { Kind = "Camera", Name = "Camera", Content = "Settings camera", X = 6, Y = 28, Width = 88 }
@@ -60,6 +68,7 @@ internal sealed record SceneTemplate(string Name, string Format, IReadOnlyList<S
             new() { Name = "LIVE", Content = "LIVE NOW", Color = "#F04455", X = 6, Y = 88, Width = 48, FontSize = 26 }
         ]),
         new("Screen tutorial", "Wide · 16:9", [
+            new() { Kind = "Display", Name = "Tutorial display", Content = "desktop", X = 0, Y = 0, Width = 100 },
             new() { Kind = "Camera", Name = "Presenter", Content = "Settings camera", X = 74, Y = 70, Width = 22 },
             new() { Name = "Tutorial title", Content = "HOW TO · YOUR TITLE", Color = "#FFFFFF", X = 4, Y = 86, Width = 64, FontSize = 28 }
         ]),
@@ -103,7 +112,7 @@ internal sealed record SceneTemplate(string Name, string Format, IReadOnlyList<S
     }
 
     private static string CustomTemplatePath() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "XStudio", "templates.json");
-    private static SceneSource CopySource(SceneSource source) => new() { Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color, X = source.X, Y = source.Y, Width = source.Width, FontSize = source.FontSize, Enabled = source.Enabled };
+    private static SceneSource CopySource(SceneSource source) => new() { Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color, X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled };
 }
 
 internal sealed class SceneLibrary

@@ -63,10 +63,15 @@ internal sealed class StreamEngine : IDisposable
         foreach (var source in scene.Sources.Where(source => source.Enabled && source.Kind == "Phone"))
             if (!phoneCaptureInputs.ContainsKey(source.Id))
                 throw new InvalidOperationException($"The {source.Content} screen is not visible yet. Start screen mirroring and wait for the phone display to appear before going live.");
-        if (captureTarget != "desktop" && CaptureWindowService.FindByTitle(captureTarget) == IntPtr.Zero)
+        var sceneOwnsCapture = scene.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background"));
+        if (!sceneOwnsCapture && captureTarget != "desktop" && CaptureWindowService.FindByTitle(captureTarget) == IntPtr.Zero)
             throw new InvalidOperationException("The selected app window is no longer open. Reopen it or choose it again in Capture settings.");
         foreach (var source in scene.Sources.Where(source => source.Enabled && source.Kind == "Image"))
             if (!File.Exists(source.Content)) throw new InvalidOperationException($"The image for {source.Name} could not be found. Edit the scene source and choose its file again.");
+        foreach (var source in scene.Sources.Where(source => source.Enabled && (source.Kind == "Video" || source.Kind == "Background" && source.Content != "transparent")))
+            if (!File.Exists(source.Content)) throw new InvalidOperationException($"The media for {source.Name} could not be found. Edit the scene source and choose its file again.");
+        foreach (var source in scene.Sources.Where(source => source.Enabled && source.Kind == "App"))
+            if (CaptureWindowService.FindByTitle(source.Content) == IntPtr.Zero) throw new InvalidOperationException($"The app window for {source.Name} is not open. Reopen it or edit the source title.");
         foreach (var destination in destinations) ValidateDestination(destination);
 
         var encoderList = await RunAndCollectAsync(["-hide_banner", "-encoders"], 10);
@@ -173,15 +178,19 @@ internal sealed class StreamEngine : IDisposable
 
     private static List<string> BuildArguments(EngineConfig config, bool useHardware)
     {
+        var hasExplicitCapture = config.Scene.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background"));
         var captureInput = config.CaptureTarget == "desktop" ? "desktop" : CaptureWindowService.ToFfmpegInput(CaptureWindowService.FindByTitle(config.CaptureTarget));
         var args = new List<string>
         {
             "-hide_banner", "-nostats", "-loglevel", "warning", "-stats_period", "1", "-progress", "pipe:2"
         };
-        args.AddRange(["-thread_queue_size", "512", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "1", "-i", captureInput]);
+        if (hasExplicitCapture) args.AddRange(["-f", "lavfi", "-i", $"color=c=black:s={config.Width}x{config.Height}:r={config.Fps}"]);
+        else args.AddRange(["-thread_queue_size", "512", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "1", "-i", captureInput]);
         var cameraInputs = new Dictionary<string, int>();
         var imageInputs = new Dictionary<string, int>();
         var phoneInputs = new Dictionary<string, int>();
+        var captureInputs = new Dictionary<string, int>();
+        var videoInputs = new Dictionary<string, int>();
         var nextInput = 1;
         foreach (var source in config.Scene.Sources.Where(source => source.Enabled))
         {
@@ -200,6 +209,18 @@ internal sealed class StreamEngine : IDisposable
                 phoneInputs[source.Id] = nextInput++;
                 args.AddRange(["-thread_queue_size", "256", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", config.PhoneCaptureInputs[source.Id]]);
             }
+            else if (source.Kind is "Display" or "App")
+            {
+                var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindByTitle(source.Content);
+                captureInputs[source.Id] = nextInput++;
+                args.AddRange(["-thread_queue_size", "512", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", window == IntPtr.Zero ? "desktop" : CaptureWindowService.ToFfmpegInput(window)]);
+            }
+            else if ((source.Kind is "Video" or "Background") && source.Content != "transparent")
+            {
+                videoInputs[source.Id] = nextInput++;
+                if (IsVideo(source.Content)) args.AddRange(["-stream_loop", "-1", "-i", source.Content]);
+                else args.AddRange(["-loop", "1", "-framerate", config.Fps.ToString(), "-i", source.Content]);
+            }
         }
         int? audioInput = null;
         if (!string.IsNullOrWhiteSpace(config.AudioDevice))
@@ -208,7 +229,7 @@ internal sealed class StreamEngine : IDisposable
             args.AddRange(["-thread_queue_size", "512", "-f", "dshow", "-audio_buffer_size", "100", "-i", $"audio={config.AudioDevice}"]);
         }
 
-        var graph = BuildSceneGraph(config, cameraInputs, imageInputs, phoneInputs);
+        var graph = BuildSceneGraph(config, cameraInputs, imageInputs, phoneInputs, captureInputs, videoInputs);
         args.AddRange(["-filter_complex", graph, "-map", "[sceneout]"]);
         if (useHardware)
             args.AddRange(["-c:v", "h264_mf", "-hw_encoding", "1", "-scenario", "live_streaming", "-rate_control", "cbr"]);
@@ -225,7 +246,7 @@ internal sealed class StreamEngine : IDisposable
         return args;
     }
 
-    private static string BuildSceneGraph(EngineConfig config, IReadOnlyDictionary<string, int> cameraInputs, IReadOnlyDictionary<string, int> imageInputs, IReadOnlyDictionary<string, int> phoneInputs)
+    private static string BuildSceneGraph(EngineConfig config, IReadOnlyDictionary<string, int> cameraInputs, IReadOnlyDictionary<string, int> imageInputs, IReadOnlyDictionary<string, int> phoneInputs, IReadOnlyDictionary<string, int> captureInputs, IReadOnlyDictionary<string, int> videoInputs)
     {
         var vertical = config.Scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase);
         var fit = vertical
@@ -246,21 +267,36 @@ internal sealed class StreamEngine : IDisposable
             }
             else if (source.Kind == "Image" && imageInputs.TryGetValue(source.Id, out var imageInput))
             {
-                var imageWidth = Math.Max(64, (int)(config.Width * source.Width / 100));
-                filters.Add($"[{imageInput}:v]scale={imageWidth}:-1[media{nextLayer}]");
+                filters.Add($"[{imageInput}:v]{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
                 filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
             }
             else if (source.Kind == "Camera" && cameraInputs.TryGetValue(source.Id, out var cameraInput))
             {
-                var cameraWidth = Math.Max(96, (int)(config.Width * source.Width / 100));
-                filters.Add($"[{cameraInput}:v]fps={config.Fps},scale={cameraWidth}:-1[media{nextLayer}]");
+                filters.Add($"[{cameraInput}:v]fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
                 filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
             }
             else if (source.Kind == "Phone" && phoneInputs.TryGetValue(source.Id, out var phoneInput))
             {
-                var phoneWidth = Math.Max(96, (int)(config.Width * source.Width / 100));
-                filters.Add($"[{phoneInput}:v]fps={config.Fps},scale={phoneWidth}:-1[media{nextLayer}]");
+                filters.Add($"[{phoneInput}:v]fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
                 filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
+            }
+            else if (captureInputs.TryGetValue(source.Id, out var captureIndex))
+            {
+                filters.Add($"[{captureIndex}:v]fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
+                filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
+            }
+            else if (videoInputs.TryGetValue(source.Id, out var videoIndex))
+            {
+                if (source.Kind == "Background")
+                {
+                    filters.Add($"[{videoIndex}:v]fps={config.Fps},scale={config.Width}:{config.Height}:force_original_aspect_ratio=increase,crop={config.Width}:{config.Height}[media{nextLayer}]");
+                    filters.Add($"[media{nextLayer}]copy[layer{nextLayer}]");
+                }
+                else
+                {
+                    filters.Add($"[{videoIndex}:v]fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
+                    filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
+                }
             }
             else { continue; }
             layer = nextLayer;
@@ -270,6 +306,16 @@ internal sealed class StreamEngine : IDisposable
     }
 
     private static string EscapeFilterPath(string path) => Path.GetFullPath(path).Replace("\\", "/").Replace(":", "\\:").Replace("'", "\\'");
+
+    private static string CropFilter(SceneSource source) => source.CropLeft + source.CropRight + source.CropTop + source.CropBottom <= 0 ? string.Empty : $"crop=iw*(1-{Percent(source.CropLeft + source.CropRight)}):ih*(1-{Percent(source.CropTop + source.CropBottom)}):iw*{Percent(source.CropLeft)}:ih*{Percent(source.CropTop)},";
+    private static string ScaleFilter(SceneSource source, int canvasWidth, int canvasHeight)
+    {
+        var width = Math.Max(2, (int)(canvasWidth * source.Width / 100));
+        if (source.Height <= 0) return $"scale={width}:-1";
+        var height = Math.Max(2, (int)(canvasHeight * source.Height / 100));
+        return $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}";
+    }
+    private static bool IsVideo(string path) => Path.GetExtension(path).ToLowerInvariant() is ".mp4" or ".mov" or ".mkv" or ".webm" or ".avi" or ".m4v";
 
     private static string Percent(double value) => (value / 100).ToString("0.####", CultureInfo.InvariantCulture);
 
@@ -289,7 +335,7 @@ internal sealed class StreamEngine : IDisposable
         return string.Join(Environment.NewLine, lines);
     }
 
-    private static SceneSource CloneSource(SceneSource source) => new() { Id = source.Id, Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color, X = source.X, Y = source.Y, Width = source.Width, FontSize = source.FontSize, Enabled = source.Enabled };
+    private static SceneSource CloneSource(SceneSource source) => new() { Id = source.Id, Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color, X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled };
 
     private static void CleanupTextFiles(EngineConfig config)
     {

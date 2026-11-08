@@ -19,6 +19,19 @@ internal static class CaptureWindowService
         return Find(handle => ReadTitle(handle).Equals(title, StringComparison.OrdinalIgnoreCase));
     }
 
+    public static IReadOnlyList<string> GetVisibleWindowTitles()
+    {
+        var titles = new List<string>();
+        EnumWindows((handle, _) =>
+        {
+            if (!IsUsable(handle)) return true;
+            var title = ReadTitle(handle);
+            if (title.Length > 0 && !titles.Contains(title, StringComparer.OrdinalIgnoreCase)) titles.Add(title);
+            return true;
+        }, IntPtr.Zero);
+        return titles.OrderBy(title => title, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
     public static IntPtr FindByProcess(int processId, string? preferredTitle = null)
     {
         IntPtr first = IntPtr.Zero;

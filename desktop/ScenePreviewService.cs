@@ -72,18 +72,23 @@ internal sealed class ScenePreviewService : IDisposable
         var vertical = scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase);
         var width = vertical ? 360 : 640;
         var height = vertical ? 640 : 360;
+        var hasExplicitCapture = scene.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background"));
         var capture = "desktop";
         CaptureTargetFallback = false;
-        if (captureTarget != "desktop")
+        if (!hasExplicitCapture && captureTarget != "desktop")
         {
             var targetWindow = CaptureWindowService.FindByTitle(captureTarget);
             if (targetWindow != IntPtr.Zero) capture = CaptureWindowService.ToFfmpegInput(targetWindow);
             else CaptureTargetFallback = true;
         }
-        var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostats", "-thread_queue_size", "64", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", capture };
+        var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostats" };
+        if (hasExplicitCapture) args.AddRange(["-f", "lavfi", "-i", $"color=c=black:s={width}x{height}:r={fps}"]);
+        else args.AddRange(["-thread_queue_size", "64", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", capture]);
         var camera = new Dictionary<string, int>();
         var images = new Dictionary<string, int>();
         var phones = new Dictionary<string, int>();
+        var captureInputs = new Dictionary<string, int>();
+        var videoInputs = new Dictionary<string, int>();
         var captured = new HashSet<string>();
         var next = 1;
         foreach (var source in scene.Sources.Where(source => source.Enabled))
@@ -109,18 +114,33 @@ internal sealed class ScenePreviewService : IDisposable
                     args.AddRange(["-thread_queue_size", "256", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", phoneInput]);
                 }
             }
+            else if (source.Kind is "Display" or "App")
+            {
+                var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindByTitle(source.Content);
+                if (source.Kind == "App" && window == IntPtr.Zero) continue;
+                captureInputs[source.Id] = next++;
+                args.AddRange(["-thread_queue_size", "256", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", window == IntPtr.Zero ? "desktop" : CaptureWindowService.ToFfmpegInput(window)]);
+            }
+            else if ((source.Kind is "Video" or "Background") && source.Content != "transparent" && File.Exists(source.Content))
+            {
+                videoInputs[source.Id] = next++;
+                if (IsVideo(source.Content)) args.AddRange(["-stream_loop", "-1", "-i", source.Content]);
+                else args.AddRange(["-loop", "1", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-i", source.Content]);
+            }
         }
 
         foreach (var source in scene.Sources.Where(source => source.Enabled))
             if (source.Kind == "Text" || source.Kind == "Image" && images.ContainsKey(source.Id)
                 || source.Kind == "Camera" && camera.ContainsKey(source.Id)
-                || source.Kind == "Phone" && phones.ContainsKey(source.Id)) captured.Add(source.Id);
+                || source.Kind == "Phone" && phones.ContainsKey(source.Id)
+                || (source.Kind is "Display" or "App") && captureInputs.ContainsKey(source.Id)
+                || (source.Kind is "Video" or "Background") && (source.Content == "transparent" || videoInputs.ContainsKey(source.Id))) captured.Add(source.Id);
         lock (gate) capturedSourceIds = captured;
 
         var fit = vertical
             ? $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
             : $"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2";
-        var filters = new List<string> { $"[0:v]fps={fps},{fit}[layer0]" };
+        var filters = new List<string> { hasExplicitCapture ? $"[0:v]fps={fps},scale={width}:{height}[layer0]" : $"[0:v]fps={fps},{fit}[layer0]" };
         var current = 0;
         var fontFile = EscapePath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Fonts", "arial.ttf"));
         foreach (var source in scene.Sources.Where(source => source.Enabled))
@@ -135,21 +155,30 @@ internal sealed class ScenePreviewService : IDisposable
             }
             else if (images.TryGetValue(source.Id, out var imageInput))
             {
-                var layerWidth = Math.Max(24, (int)(width * source.Width / 100));
-                filters.Add($"[{imageInput}:v]scale={layerWidth}:-1[media{nextLayer}]");
+                filters.Add($"[{imageInput}:v]{CropFilter(source)}{ScaleFilter(source, width, height)}[media{nextLayer}]");
                 filters.Add(Overlay(current, nextLayer, source));
             }
             else if (camera.TryGetValue(source.Id, out var cameraInput))
             {
-                var layerWidth = Math.Max(24, (int)(width * source.Width / 100));
-                filters.Add($"[{cameraInput}:v]fps={fps},scale={layerWidth}:-1[media{nextLayer}]");
+                filters.Add($"[{cameraInput}:v]fps={fps},{CropFilter(source)}{ScaleFilter(source, width, height)}[media{nextLayer}]");
                 filters.Add(Overlay(current, nextLayer, source));
             }
             else if (phones.TryGetValue(source.Id, out var phoneInput))
             {
-                var layerWidth = Math.Max(24, (int)(width * source.Width / 100));
-                filters.Add($"[{phoneInput}:v]fps={fps},scale={layerWidth}:-1[media{nextLayer}]");
+                filters.Add($"[{phoneInput}:v]fps={fps},{CropFilter(source)}{ScaleFilter(source, width, height)}[media{nextLayer}]");
                 filters.Add(Overlay(current, nextLayer, source));
+            }
+            else if (captureInputs.TryGetValue(source.Id, out var captureIndex))
+            {
+                filters.Add($"[{captureIndex}:v]fps={fps},{CropFilter(source)}{ScaleFilter(source, width, height)}[media{nextLayer}]");
+                filters.Add(Overlay(current, nextLayer, source));
+            }
+            else if (videoInputs.TryGetValue(source.Id, out var videoIndex))
+            {
+                var fitMedia = source.Kind == "Background" ? $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}" : $"{CropFilter(source)}{ScaleFilter(source, width, height)}";
+                filters.Add($"[{videoIndex}:v]fps={fps},{fitMedia}[media{nextLayer}]");
+                if (source.Kind == "Background") filters.Add($"[media{nextLayer}]setpts=PTS-STARTPTS[bkg{nextLayer}]");
+                filters.Add(source.Kind == "Background" ? $"[bkg{nextLayer}]copy[layer{nextLayer}]" : Overlay(current, nextLayer, source));
             }
             else { continue; }
             current = nextLayer;
@@ -210,6 +239,15 @@ internal sealed class ScenePreviewService : IDisposable
     }
 
     private static string Percent(double value) => (value / 100).ToString("0.####", CultureInfo.InvariantCulture);
+    private static string CropFilter(SceneSource source) => source.CropLeft + source.CropRight + source.CropTop + source.CropBottom <= 0 ? string.Empty : $"crop=iw*(1-{Percent(source.CropLeft + source.CropRight)}):ih*(1-{Percent(source.CropTop + source.CropBottom)}):iw*{Percent(source.CropLeft)}:ih*{Percent(source.CropTop)},";
+    private static string ScaleFilter(SceneSource source, int canvasWidth, int canvasHeight)
+    {
+        var targetWidth = Math.Max(24, (int)(canvasWidth * source.Width / 100));
+        if (source.Height <= 0) return $"scale={targetWidth}:-1";
+        var targetHeight = Math.Max(24, (int)(canvasHeight * source.Height / 100));
+        return $"scale={targetWidth}:{targetHeight}:force_original_aspect_ratio=increase,crop={targetWidth}:{targetHeight}";
+    }
+    private static bool IsVideo(string path) => Path.GetExtension(path).ToLowerInvariant() is ".mp4" or ".mov" or ".mkv" or ".webm" or ".avi" or ".m4v";
     private static string WrapText(string text, int maxCharacters)
     {
         var lines = new List<string>();
