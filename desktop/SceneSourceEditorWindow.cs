@@ -26,6 +26,7 @@ internal sealed class SceneSourceEditorWindow : Window
     private readonly TextBlock contentLabel = new();
     private readonly TextBlock colorLabel = new() { Text = "TEXT COLOR · HEX" };
     private readonly SceneSource? original;
+    private int selectedAppProcessId;
 
     public SceneSource? Result { get; private set; }
 
@@ -81,8 +82,8 @@ internal sealed class SceneSourceEditorWindow : Window
         {
             var selected = contentBox.Text;
             appWindowBox.Items.Clear();
-            foreach (var title in CaptureWindowService.GetVisibleWindowTitles()) appWindowBox.Items.Add(title);
-            appWindowBox.SelectedItem = appWindowBox.Items.Cast<string>().FirstOrDefault(title => title.Equals(selected, StringComparison.OrdinalIgnoreCase));
+            foreach (var window in CaptureWindowService.GetVisibleWindows()) appWindowBox.Items.Add(window);
+            appWindowBox.SelectedItem = appWindowBox.Items.Cast<CaptureWindowChoice>().FirstOrDefault(window => window.Title.Equals(selected, StringComparison.OrdinalIgnoreCase));
         };
         DockPanel.SetDock(refreshApps, Dock.Right);
         contentDock.Children.Add(refreshApps);
@@ -95,8 +96,15 @@ internal sealed class SceneSourceEditorWindow : Window
         root.Children.Add(contentDock);
         appWindowBox.Height = 38;
         appWindowBox.Margin = new Thickness(0, -8, 0, 13);
-        foreach (var title in CaptureWindowService.GetVisibleWindowTitles()) appWindowBox.Items.Add(title);
-        appWindowBox.SelectionChanged += (_, _) => { if (appWindowBox.SelectedItem is string title) contentBox.Text = title; };
+        foreach (var window in CaptureWindowService.GetVisibleWindows()) appWindowBox.Items.Add(window);
+        appWindowBox.SelectionChanged += (_, _) =>
+        {
+            if (appWindowBox.SelectedItem is CaptureWindowChoice window)
+            {
+                contentBox.Text = window.Title;
+                selectedAppProcessId = window.ProcessId;
+            }
+        };
         StyleControl(appWindowBox);
         appWindowBox.Visibility = Visibility.Collapsed;
         root.Children.Add(appWindowBox);
@@ -145,7 +153,8 @@ internal sealed class SceneSourceEditorWindow : Window
             kindBox.SelectedItem = source.Kind;
             nameBox.Text = source.Name;
             contentBox.Text = source.Content;
-            appWindowBox.SelectedItem = appWindowBox.Items.Cast<string>().FirstOrDefault(title => title.Equals(source.Content, StringComparison.OrdinalIgnoreCase));
+            selectedAppProcessId = source.WindowProcessId;
+            appWindowBox.SelectedItem = appWindowBox.Items.Cast<CaptureWindowChoice>().FirstOrDefault(window => window.Title.Equals(source.Content, StringComparison.OrdinalIgnoreCase));
             phoneTypeBox.SelectedItem = source.Content is "Android" or "iPhone" ? source.Content : "Android";
             colorBox.Text = source.Color;
             xBox.Text = source.X.ToString("0.##"); yBox.Text = source.Y.ToString("0.##"); widthBox.Text = source.Width.ToString("0.##"); heightBox.Text = source.Height == 0 ? "" : source.Height.ToString("0.##"); fontSizeBox.Text = source.FontSize.ToString();
@@ -213,7 +222,7 @@ internal sealed class SceneSourceEditorWindow : Window
         double Crop(TextBox box) => double.TryParse(box.Text, out var value) ? Math.Clamp(value, 0, 90) : 0;
         var cropLeft = Crop(cropLeftBox); var cropRight = Crop(cropRightBox); var cropTop = Crop(cropTopBox); var cropBottom = Crop(cropBottomBox);
         if (cropLeft + cropRight >= 95 || cropTop + cropBottom >= 95) { Warn("Crop edges must leave at least 5% of the source visible."); return; }
-        Result = new SceneSource { Id = original?.Id ?? Guid.NewGuid().ToString("N"), Kind = kind, Name = name, Content = content, Color = color, X = x, Y = y, Width = width, Height = height, CropLeft = cropLeft, CropTop = cropTop, CropRight = cropRight, CropBottom = cropBottom, FontSize = Math.Clamp(fontSize, 10, 180) };
+        Result = new SceneSource { Id = original?.Id ?? Guid.NewGuid().ToString("N"), Kind = kind, Name = name, Content = content, Color = color, X = x, Y = y, Width = width, Height = height, CropLeft = cropLeft, CropTop = cropTop, CropRight = cropRight, CropBottom = cropBottom, FontSize = Math.Clamp(fontSize, 10, 180), WindowProcessId = kind == "App" ? selectedAppProcessId : 0 };
         DialogResult = true;
         Close();
     }
