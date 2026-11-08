@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using System.IO;
+using System.Diagnostics;
 
 namespace XStudio;
 
@@ -23,12 +24,43 @@ internal static class CaptureWindowService
         if (exact != IntPtr.Zero) return exact;
         // Window titles often gain a document name or status suffix while an app is running.
         // Prefer a stable app/title fragment when an exact saved title no longer exists.
-        return Find(handle =>
+        var byCaption = Find(handle =>
         {
             var current = ReadTitle(handle);
             return current.Contains(title.Trim(), StringComparison.OrdinalIgnoreCase)
                 || requested.Length >= 3 && current.Contains(requested, StringComparison.OrdinalIgnoreCase);
         });
+        if (byCaption != IntPtr.Zero) return byCaption;
+
+        // Some apps change their document caption while open. If the stored caption
+        // contains the app name, resolve its process main window as a final fallback.
+        var appToken = requested.Split([' ', '—', '–', '-', '|', '·'], StringSplitOptions.RemoveEmptyEntries)
+            .LastOrDefault(token => token.Length >= 4);
+        if (appToken is null) return IntPtr.Zero;
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                if (!process.ProcessName.Contains(appToken, StringComparison.OrdinalIgnoreCase)
+                    && !process.MainWindowTitle.Contains(appToken, StringComparison.OrdinalIgnoreCase)) continue;
+                var processWindow = FindByProcess(process.Id, title.Trim());
+                if (processWindow != IntPtr.Zero) return processWindow;
+            }
+            catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception) { }
+            finally { process.Dispose(); }
+        }
+        return IntPtr.Zero;
+    }
+
+    public static IntPtr FindBySource(SceneSource source)
+    {
+        if (source.WindowProcessId > 0)
+        {
+            var processWindow = FindByProcess(source.WindowProcessId, source.Content);
+            if (processWindow != IntPtr.Zero) return processWindow;
+        }
+        return FindByTitle(source.Content);
     }
 
     public static IReadOnlyList<string> GetVisibleWindowTitles()
@@ -42,6 +74,21 @@ internal static class CaptureWindowService
             return true;
         }, IntPtr.Zero);
         return titles.OrderBy(title => title, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    public static IReadOnlyList<CaptureWindowChoice> GetVisibleWindows()
+    {
+        var windows = new List<CaptureWindowChoice>();
+        EnumWindows((handle, _) =>
+        {
+            if (!IsUsable(handle)) return true;
+            var title = ReadTitle(handle);
+            if (title.Length == 0 || windows.Any(item => item.Title.Equals(title, StringComparison.OrdinalIgnoreCase))) return true;
+            GetWindowThreadProcessId(handle, out var processId);
+            windows.Add(new CaptureWindowChoice(title, unchecked((int)processId)));
+            return true;
+        }, IntPtr.Zero);
+        return windows.OrderBy(item => item.Title, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     public static IntPtr FindByProcess(int processId, string? preferredTitle = null)
@@ -94,5 +141,10 @@ internal static class CaptureWindowService
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect { public int Left, Top, Right, Bottom; }
+}
+
+internal sealed record CaptureWindowChoice(string Title, int ProcessId)
+{
+    public override string ToString() => Title;
 }
 
