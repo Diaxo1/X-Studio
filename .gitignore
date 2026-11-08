@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+.dotnet-home/
+.nuget/
+dist/
+node_modules/
+tools/
+*.user
+*.suo
+*.key
+*.crt

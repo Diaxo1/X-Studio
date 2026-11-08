@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#111214">
+  <title>X Studio — Live desk</title><link rel="stylesheet" href="styles.css"><script src="app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" aria-label="X Studio live desk"><span class="brand-mark"><i></i><i></i><i></i></span><span class="brand-name">X<span>STUDIO</span></span></a>
+      <div class="rail-label">YOUR STUDIO <span>⌄</span></div>
+      <nav class="main-nav" aria-label="Main navigation">
+        <button class="nav-item active" data-view="studio"><span class="nav-glyph">▤</span><span>Live desk</span><b>01</b></button>
+        <button class="nav-item" data-view="scenes"><span class="nav-glyph">◫</span><span>Scene library</span></button>
+        <button class="nav-item" data-view="destinations"><span class="nav-glyph">↗</span><span>Destinations</span></button>
+        <button class="nav-item" data-view="plugins"><span class="nav-glyph">✳</span><span>Extensions</span><small>SOON</small></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="mode-card"><span class="mode-icon">◌</span><div><b>Quiet mode</b><small>Low overhead profile</small></div><span class="mode-led"></span></div>
+        <button class="nav-item settings-item" data-view="settings"><span class="nav-glyph">⚙</span><span>Preferences</span></button>
+        <div class="profile"><span class="avatar">X</span><div><b>Creator profile</b><small>This device</small></div><span class="profile-dots">···</span></div>
+        <div class="sidebar-foot">X STUDIO <span>BUILD 001</span></div>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar"><div class="crumb"><span>CONTROL ROOM</span><b id="page-name">LIVE DESK</b></div><div class="top-actions"><span class="engine-state"><i></i>Engine idle</span><button class="help-button" aria-label="Help">?</button><span class="avatar avatar-small">X</span></div></header>
+
+      <div class="content" id="studio-view">
+        <section class="intro-row compact-intro"><div><h1>Stream control</h1><p class="intro-copy">Scenes, sources, destinations.</p></div><button class="primary-button" id="go-live"><span class="broadcast-icon">◉</span><span>Start broadcast</span><span class="button-arrow">↗</span></button></section>
+
+        <section class="dashboard-grid">
+          <section class="monitor-card panel"><div class="panel-heading"><div class="heading-stack"><span class="section-kicker">01 <i>/ MONITOR</i></span><h2>Stream preview</h2></div><div class="monitor-top-right"><div class="preview-modes" role="group" aria-label="Preview format"><button class="preview-mode active" type="button" data-preview="wide" aria-pressed="true">Wide</button><button class="preview-mode" type="button" data-preview="tiktok" aria-pressed="false">TikTok</button></div><span class="resolution" id="preview-resolution">16:9 <b>·</b> 1080P</span></div></div>
+            <div class="preview-canvas" id="preview-canvas"><div class="monitor-grain"></div><div class="monitor-rails rail-left"></div><div class="monitor-rails rail-right"></div><div class="stage-art"><span class="stage-mark">X</span><span class="stage-overline">YOUR NEXT BROADCAST</span><strong>All eyes<br><em>this way.</em></strong><span class="stage-caption">Add a source to bring your set to life.</span></div><div class="tiktok-overlay" aria-hidden="true"><span class="tiktok-live-tag">LIVE PREVIEW</span><span class="tiktok-channel">Your channel <i>· sample layout</i></span><div class="tiktok-chat"><b>Chat preview</b><span>Comments will appear here</span></div><div class="tiktok-actions"><i>♡</i><i>♧</i><i>↗</i></div></div><div class="monitor-readout"><span><i></i> PROGRAM</span><span>00:00:00</span><span id="preview-status">NO SIGNAL</span></div><button class="canvas-expand" aria-label="Expand monitor">⛶</button></div>
+            <div class="scene-strip"><div class="scene-current"><span class="scene-thumb"><i>01</i></span><div><small>ON DECK</small><strong>Starting soon</strong></div><span class="scene-status">ACTIVE</span></div><button class="text-button" data-view="scenes">Open scene library <span>↗</span></button></div>
+          </section>
+
+          <div class="right-column">
+            <section class="panel outputs-panel"><div class="panel-heading"><div class="heading-stack"><span class="section-kicker">02 <i>/ SEND TO</i></span><h2>Your destinations</h2></div><span class="output-count">0 <i>CONNECTED</i></span></div><p class="panel-subtitle">Choose a platform for this broadcast.</p><div class="platform-list">
+              <label class="platform-row"><span class="platform-icon tiktok">♪</span><span class="platform-copy"><b>TikTok LIVE</b><small>Setup required</small></span><span class="connect-state">ADD <i>＋</i></span><input type="checkbox" class="destination-check" aria-label="Select TikTok LIVE as a destination"></label>
+              <label class="platform-row"><span class="platform-icon youtube">▶</span><span class="platform-copy"><b>YouTube Live</b><small>Setup required</small></span><span class="connect-state">ADD <i>＋</i></span><input type="checkbox" class="destination-check" aria-label="Select YouTube Live as a destination"></label>
+              <label class="platform-row"><span class="platform-icon twitch">▰</span><span class="platform-copy"><b>Twitch</b><small>Setup required</small></span><span class="connect-state">ADD <i>＋</i></span><input type="checkbox" class="destination-check" aria-label="Select Twitch as a destination"></label>
+            </div><button class="outline-button full-button" data-view="destinations"><span>＋</span> Configure destinations</button></section>
+
+            <section class="phone-card"><div class="phone-graphic"><span class="phone-orbit orbit-a"></span><span class="phone-orbit orbit-b"></span><div class="phone-frame"><i class="phone-speaker"></i><span class="phone-glyph">⌁</span><span class="phone-lens"></span></div><span class="cast-beam"></span><span class="cast-stamp">X</span><span class="phone-index">SOURCE<br>02</span></div><div class="phone-copy"><p class="eyebrow">THE PHONE, ON SET</p><h2>Bring the<br>outside in.</h2><p>Cast your phone into the scene over local Wi-Fi or USB.</p><button class="text-button" id="cast-phone">Pair a phone <span>↗</span></button></div><span class="phone-card-index">MOBILE INPUT / 01</span></section>
+          </div>
+        </section>
+
+        <section class="lower-grid">
+          <section class="panel sources-panel"><div class="panel-heading"><div class="heading-stack"><span class="section-kicker">03 <i>/ THE SET</i></span><h2>On stage</h2></div><button class="text-button add-source-button" id="add-source"><span>＋</span> Add a source</button></div><div class="source-list" id="source-list"><div class="source-empty"><span class="empty-spark">✳</span><span><b>The stage is clear.</b><small>Add a camera, display, phone, or graphic to begin.</small></span><button class="mini-add" id="empty-add">Choose source <i>↗</i></button></div></div></section>
+          <section class="panel performance-panel"><div class="panel-heading"><div class="heading-stack"><span class="section-kicker">04 <i>/ SYSTEM</i></span><h2>Load monitor</h2></div><span class="waiting-label"><i></i>WAITING FOR ENGINE</span></div><div class="metrics"><div class="metric"><span>PROCESSOR</span><strong>—<small>%</small></strong><div class="meter-track"><i></i></div></div><div class="metric"><span>MEMORY</span><strong>—<small> GB</small></strong><div class="meter-track"><i></i></div></div><div class="metric encoder-metric"><span>ENCODER</span><strong>Not measured</strong><small class="metric-note">Stats appear in app</small></div></div><div class="performance-note"><span>◌</span> Quiet mode is ready for your setup.</div></section>
+        </section>
+        <footer class="footer"><span>A FIRST LOOK <i>·</i> X STUDIO</span><span>MADE TO FEEL LIKE YOURS <b>✳</b></span></footer>
+      </div>
+      <div class="content alternate-view" id="alternate-view" hidden></div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog class="modal stream-modal" id="stream-setup-modal"><form id="stream-form"><div class="modal-top"><div><p class="eyebrow">OUTPUT SETUP</p><h2>Send your first stream.</h2></div><button class="icon-button close-modal" type="button" aria-label="Close">×</button></div><p class="modal-subtitle">Connect one destination. Your key stays on this device and is not saved.</p><div class="form-grid"><label>Platform<select id="stream-platform"><option>TikTok LIVE</option><option>YouTube Live</option><option>Twitch</option><option>Custom RTMP</option></select></label><label>Quality<select id="stream-quality"><option value="720p30">720p · 30 fps</option><option value="480p30">480p · 30 fps</option></select></label><label class="form-wide">RTMP server URL<input id="stream-server" type="url" placeholder="rtmp(s)://server/app" autocomplete="off" required></label><label class="form-wide">Stream key<input id="stream-key" type="password" placeholder="Paste your stream key" autocomplete="new-password" required></label><label class="form-wide">Microphone<select id="audio-device"><option value="">No microphone audio</option></select></label><label class="form-wide encoder-choice">Encoder<select id="stream-encoder"><option value="auto">Automatic · hardware first</option><option value="software">Software · x264 ultrafast</option></select></label></div><p class="local-note"><span>LOCAL ONLY</span> Screen capture starts when you begin. Stop the stream before closing X Studio.</p><p class="form-feedback" id="stream-feedback" role="status" aria-live="polite"></p><div class="modal-actions"><button type="button" class="outline-button cancel-stream">Cancel</button><button type="submit" class="primary-button" id="stream-submit"><span>◉</span> Start stream</button></div></form></dialog>
+  <dialog class="modal" id="source-modal"><form method="dialog"><div class="modal-top"><div><p class="eyebrow">BUILD THE SET</p><h2>What goes on stage?</h2></div><button class="icon-button close-modal" aria-label="Close">×</button></div><p class="modal-subtitle">Pick an input to add to this scene.</p><div class="source-options"><button class="source-option" value="Screen capture"><span>▣</span><b>Display</b><small>Share a screen or app</small></button><button class="source-option" value="Camera"><span>◉</span><b>Camera</b><small>Bring yourself on camera</small></button><button class="source-option" value="Phone cast"><span>▯</span><b>Phone cast</b><small>Pair over Wi-Fi or USB</small></button><button class="source-option" value="Image"><span>▧</span><b>Graphic</b><small>Add an image or overlay</small></button></div></form></dialog>
+  <dialog class="modal cast-modal" id="cast-modal"><form method="dialog"><div class="modal-top"><div><p class="eyebrow">MOBILE INPUT / 01</p><h2>Bring your phone on set.</h2></div><button class="icon-button close-modal" aria-label="Close">×</button></div><div class="cast-qr"><div class="qr-placeholder"><span>⌁</span><small>PAIRING PREVIEW</small></div></div><p class="cast-instruction">Phone casting is planned for the native app. This is where you’ll pair a device.</p><div class="cast-methods"><button type="button" class="method selected">Wi-Fi <small>Move freely</small></button><button type="button" class="method">USB <small>Direct connection</small></button></div><button type="button" class="primary-button full-button" id="start-pairing">Start pairing <span>↗</span></button></form></dialog>
+</body></html>

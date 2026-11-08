@@ -1,0 +1,264 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+
+namespace XStudio;
+
+internal sealed class ScenePreviewService : IDisposable
+{
+    private readonly object gate = new();
+    private Process? process;
+    private readonly List<string> textFiles = [];
+    private bool stopping;
+
+    public event Action<byte[]>? FrameReady;
+    public event Action<string>? PreviewFailed;
+    public bool IsRunning { get { lock (gate) return process is { HasExited: false }; } }
+
+    public Task StartAsync(StudioScene scene, string captureTarget, string? cameraDevice, bool androidRunning, bool iphoneRunning)
+    {
+        Stop();
+        var arguments = BuildArguments(scene, captureTarget, cameraDevice, androidRunning, iphoneRunning);
+        var child = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = ResolveFfmpeg(), UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardError = true, RedirectStandardOutput = true
+            }, EnableRaisingEvents = true
+        };
+        foreach (var argument in arguments) child.StartInfo.ArgumentList.Add(argument);
+        try
+        {
+            if (!child.Start()) throw new InvalidOperationException("The preview capture could not start.");
+        }
+        catch (Exception ex)
+        {
+            child.Dispose(); CleanupTextFiles();
+            throw new InvalidOperationException("X Studio could not open the live preview. Check FFmpeg and the selected capture input.", ex);
+        }
+        lock (gate) { process = child; stopping = false; }
+        var errors = ReadErrorsAsync(child);
+        _ = ReadFramesAsync(child, errors);
+        return Task.CompletedTask;
+    }
+
+    public void Stop()
+    {
+        Process? child;
+        lock (gate)
+        {
+            stopping = true;
+            child = process;
+            process = null;
+        }
+        if (child is not null)
+        {
+            try { if (!child.HasExited) child.Kill(entireProcessTree: true); } catch { }
+            child.Dispose();
+        }
+        CleanupTextFiles();
+    }
+
+    private List<string> BuildArguments(StudioScene scene, string captureTarget, string? cameraDevice, bool androidRunning, bool iphoneRunning)
+    {
+        const int fps = 6;
+        var vertical = scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase);
+        var width = vertical ? 360 : 640;
+        var height = vertical ? 640 : 360;
+        var capture = captureTarget == "desktop" ? "desktop" : $"title={captureTarget}";
+        var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostats", "-thread_queue_size", "64", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", capture };
+        var camera = new Dictionary<string, int>();
+        var images = new Dictionary<string, int>();
+        var phones = new Dictionary<string, int>();
+        var missing = new HashSet<string>();
+        var next = 1;
+        foreach (var source in scene.Sources.Where(source => source.Enabled))
+        {
+            if (source.Kind == "Camera")
+            {
+                if (!string.IsNullOrWhiteSpace(cameraDevice))
+                {
+                    camera[source.Id] = next++;
+                    args.AddRange(["-thread_queue_size", "32", "-f", "dshow", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-i", $"video={cameraDevice}"]);
+                }
+                else missing.Add(source.Id);
+            }
+            else if (source.Kind == "Image" && File.Exists(source.Content))
+            {
+                images[source.Id] = next++;
+                args.AddRange(["-loop", "1", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-i", source.Content]);
+            }
+            else if (source.Kind == "Phone")
+            {
+                var ready = source.Content == "Android" ? androidRunning : iphoneRunning;
+                if (ready)
+                {
+                    phones[source.Id] = next++;
+                    var title = source.Content == "iPhone" ? PhoneCastService.IPhoneWindowTitle : PhoneCastService.AndroidWindowTitle;
+                    args.AddRange(["-thread_queue_size", "32", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", $"title={title}"]);
+                }
+                else missing.Add(source.Id);
+            }
+        }
+
+        var fit = vertical
+            ? $"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
+            : $"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2";
+        var filters = new List<string> { $"[0:v]fps={fps},{fit}[layer0]" };
+        var current = 0;
+        var fontFile = EscapePath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Fonts", "arial.ttf"));
+        foreach (var source in scene.Sources.Where(source => source.Enabled))
+        {
+            var nextLayer = current + 1;
+            if (source.Kind == "Text")
+            {
+                var maxCharacters = Math.Max(8, (int)(width * source.Width / 100 / Math.Max(1, source.FontSize * .56)));
+                var text = MakeTextFile(WrapText(source.Content, maxCharacters));
+                var previewFontSize = Math.Max(8, (int)Math.Round(source.FontSize * width / (vertical ? 720d : 1280d)));
+                filters.Add($"[layer{current}]drawtext=fontfile='{fontFile}':textfile='{EscapePath(text)}':fontsize={previewFontSize}:fontcolor=0x{source.Color.TrimStart('#')}:x=w*{Percent(source.X)}:y=h*{Percent(source.Y)}:box=1:boxcolor=black@0.38:boxborderw=6[layer{nextLayer}]");
+            }
+            else if (images.TryGetValue(source.Id, out var imageInput))
+            {
+                var layerWidth = Math.Max(24, (int)(width * source.Width / 100));
+                filters.Add($"[{imageInput}:v]scale={layerWidth}:-1[media{nextLayer}]");
+                filters.Add(Overlay(current, nextLayer, source));
+            }
+            else if (camera.TryGetValue(source.Id, out var cameraInput))
+            {
+                var layerWidth = Math.Max(24, (int)(width * source.Width / 100));
+                filters.Add($"[{cameraInput}:v]scale={layerWidth}:-1[media{nextLayer}]");
+                filters.Add(Overlay(current, nextLayer, source));
+            }
+            else if (phones.TryGetValue(source.Id, out var phoneInput))
+            {
+                var layerWidth = Math.Max(24, (int)(width * source.Width / 100));
+                filters.Add($"[{phoneInput}:v]scale={layerWidth}:-1[media{nextLayer}]");
+                filters.Add(Overlay(current, nextLayer, source));
+            }
+            else if (missing.Contains(source.Id) || source.Kind == "Image")
+            {
+                var label = source.Kind == "Camera" ? "SELECT A CAMERA" : source.Kind == "Phone" ? $"START {source.Content.ToUpperInvariant()} CAST" : "IMAGE MISSING";
+                var text = MakeTextFile(label);
+                var x = Percent(source.X); var y = Percent(source.Y); var w = Percent(source.Width);
+                filters.Add($"[layer{current}]drawbox=x=W*{x}:y=H*{y}:w=W*{w}:h=H*0.22:color=0x292A30@1:t=fill,drawbox=x=W*{x}:y=H*{y}:w=W*{w}:h=H*0.22:color=0xF04455@1:t=2,drawtext=fontfile='{fontFile}':textfile='{EscapePath(text)}':fontsize=14:fontcolor=white:x=W*{x}+8:y=H*{y}+8[layer{nextLayer}]");
+            }
+            else { continue; }
+            current = nextLayer;
+        }
+        filters.Add($"[layer{current}]format=yuvj420p[sceneout]");
+        args.AddRange(["-filter_complex", string.Join(';', filters), "-map", "[sceneout]", "-an", "-c:v", "mjpeg", "-q:v", "8", "-f", "image2pipe", "pipe:1"]);
+        return args;
+    }
+
+    private static string Overlay(int current, int next, SceneSource source) =>
+        $"[layer{current}][media{next}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{next}]";
+
+    private string MakeTextFile(string text)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"xstudio-preview-{Guid.NewGuid():N}.txt");
+        File.WriteAllText(path, text);
+        textFiles.Add(path);
+        return path;
+    }
+
+    private static string Percent(double value) => (value / 100).ToString("0.####", CultureInfo.InvariantCulture);
+    private static string WrapText(string text, int maxCharacters)
+    {
+        var lines = new List<string>();
+        foreach (var paragraph in text.Replace("\r", string.Empty).Split('\n'))
+        {
+            var line = string.Empty;
+            foreach (var word in paragraph.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (line.Length > 0 && line.Length + word.Length + 1 > maxCharacters) { lines.Add(line); line = word; }
+                else line = line.Length == 0 ? word : line + " " + word;
+            }
+            lines.Add(line);
+        }
+        return string.Join('\n', lines);
+    }
+    private static string EscapePath(string path) => Path.GetFullPath(path).Replace("\\", "/").Replace(":", "\\:").Replace("'", "\\'");
+
+    private static string ResolveFfmpeg()
+    {
+        var bundled = Path.Combine(AppContext.BaseDirectory, "tools", "ffmpeg", "ffmpeg.exe");
+        if (File.Exists(bundled)) return bundled;
+        var path = Environment.GetEnvironmentVariable("FFMPEG_PATH");
+        return !string.IsNullOrWhiteSpace(path) && File.Exists(path) ? path : "ffmpeg";
+    }
+
+    private async Task ReadFramesAsync(Process child, Task<string> errorsTask)
+    {
+        var buffer = new byte[65536];
+        using var frame = new MemoryStream(256 * 1024);
+        var inFrame = false; var previous = -1;
+        try
+        {
+            while (true)
+            {
+                var count = await child.StandardOutput.BaseStream.ReadAsync(buffer);
+                if (count == 0) break;
+                for (var index = 0; index < count; index++)
+                {
+                    var value = buffer[index];
+                    if (!inFrame && previous == 0xFF && value == 0xD8)
+                    {
+                        frame.SetLength(0); frame.WriteByte(0xFF); frame.WriteByte(0xD8); inFrame = true;
+                    }
+                    else if (inFrame)
+                    {
+                        frame.WriteByte(value);
+                        if (previous == 0xFF && value == 0xD9)
+                        {
+                            if (frame.Length < 4 || frame.Length > 16 * 1024 * 1024) { frame.SetLength(0); inFrame = false; }
+                            else
+                            {
+                                if (IsCurrent(child)) FrameReady?.Invoke(frame.ToArray());
+                                frame.SetLength(0); inFrame = false;
+                            }
+                        }
+                    }
+                    previous = value;
+                }
+            }
+            await child.WaitForExitAsync();
+            var errors = await errorsTask;
+            if (IsCurrent(child) && !IsStopping() && child.ExitCode != 0)
+                PreviewFailed?.Invoke(string.IsNullOrWhiteSpace(errors)
+                    ? "Live preview stopped. Check that the selected display, camera, and phone receiver are available."
+                    : errors.Trim().Length > 700 ? errors.Trim()[^700..] : errors.Trim());
+        }
+        catch (ObjectDisposedException) { }
+        catch (IOException) { }
+        finally
+        {
+            if (IsCurrent(child))
+            {
+                lock (gate) process = null;
+                child.Dispose(); CleanupTextFiles();
+            }
+        }
+    }
+
+    private static async Task<string> ReadErrorsAsync(Process child)
+    {
+        try
+        {
+            return await child.StandardError.ReadToEndAsync();
+        }
+        catch (ObjectDisposedException) { return string.Empty; }
+        catch (IOException) { return string.Empty; }
+    }
+
+    private bool IsCurrent(Process child) { lock (gate) return ReferenceEquals(process, child); }
+    private bool IsStopping() { lock (gate) return stopping; }
+
+    private void CleanupTextFiles()
+    {
+        foreach (var path in textFiles) try { File.Delete(path); } catch (IOException) { }
+        textFiles.Clear();
+    }
+
+    public void Dispose() => Stop();
+}

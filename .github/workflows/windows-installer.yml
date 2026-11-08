@@ -1,0 +1,42 @@
+name: Build X Studio Windows installer
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish self-contained app and dependencies
+        shell: pwsh
+        run: .\package-release.ps1 -Configuration Release
+
+      - name: Build setup kit
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem .\dist -File -Filter 'XStudio-Release-win-x64-*.zip' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (!$package) { throw 'The self-contained app package was not created.' }
+          .\Build-Installer.ps1 -PackageZip $package.FullName
+
+      - name: Upload installer kit
+        uses: actions/upload-artifact@v4
+        with:
+          name: XStudio-Windows-Alpha-Installer
+          path: |
+            dist/XStudio-Setup-win-x64-*.zip
+            dist/XStudio-Setup-win-x64-*.zip.sha256
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,12 @@
+{
+  "name": "x-studio-engine-spike",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local X Studio capture and RTMP engine proof of concept",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
