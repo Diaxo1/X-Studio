@@ -81,9 +81,9 @@ internal sealed class ScenePreviewService : IDisposable
             if (targetWindow != IntPtr.Zero) capture = CaptureWindowService.ToFfmpegInput(targetWindow);
             else CaptureTargetFallback = true;
         }
-        var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostats" };
+        var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostats", "-filter_threads", "1", "-filter_complex_threads", "1" };
         if (hasExplicitCapture) args.AddRange(["-f", "lavfi", "-i", $"color=c=black:s={width}x{height}:r={fps}"]);
-        else args.AddRange(["-thread_queue_size", "64", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", capture]);
+        else args.AddRange(["-thread_queue_size", "4", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", capture]);
         var camera = new Dictionary<string, int>();
         var images = new Dictionary<string, int>();
         var phones = new Dictionary<string, int>();
@@ -99,7 +99,7 @@ internal sealed class ScenePreviewService : IDisposable
                 if (cameraAvailable && !string.IsNullOrWhiteSpace(cameraDevice))
                 {
                     camera[source.Id] = next++;
-                    args.AddRange(["-thread_queue_size", "256", "-f", "dshow", "-i", $"video={cameraDevice}"]);
+                    args.AddRange(["-thread_queue_size", "4", "-f", "dshow", "-i", $"video={cameraDevice}"]);
                 }
             }
             else if (source.Kind == "Image" && File.Exists(source.Content))
@@ -112,7 +112,7 @@ internal sealed class ScenePreviewService : IDisposable
                 if (phoneCaptureInputs.TryGetValue(source.Id, out var phoneInput))
                 {
                     phones[source.Id] = next++;
-                    args.AddRange(["-thread_queue_size", "256", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", phoneInput]);
+                    args.AddRange(["-thread_queue_size", "4", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", phoneInput]);
                 }
             }
             else if (source.Kind is "Display" or "App")
@@ -120,7 +120,7 @@ internal sealed class ScenePreviewService : IDisposable
                 var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindBySource(source);
                 if (source.Kind == "App" && window == IntPtr.Zero) { missingApps.Add(source.Id); continue; }
                 captureInputs[source.Id] = next++;
-                args.AddRange(["-thread_queue_size", "256", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", window == IntPtr.Zero ? "desktop" : CaptureWindowService.ToFfmpegInput(window)]);
+                args.AddRange(["-thread_queue_size", "4", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", window == IntPtr.Zero ? "desktop" : CaptureWindowService.ToFfmpegInput(window)]);
             }
             else if ((source.Kind is "Video" or "Background") && source.Content != "transparent" && File.Exists(source.Content))
             {
