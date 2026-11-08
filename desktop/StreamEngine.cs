@@ -218,7 +218,11 @@ internal sealed class StreamEngine : IDisposable
             else if ((source.Kind is "Video" or "Background") && source.Content != "transparent")
             {
                 videoInputs[source.Id] = nextInput++;
-                if (IsVideo(source.Content)) args.AddRange(["-stream_loop", "-1", "-i", source.Content]);
+                if (IsVideo(source.Content))
+                {
+                    if (source.PlaybackPositionSeconds > 0) args.AddRange(["-ss", source.PlaybackPositionSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)]);
+                    args.AddRange(["-stream_loop", "-1", "-i", source.Content]);
+                }
                 else args.AddRange(["-loop", "1", "-framerate", config.Fps.ToString(), "-i", source.Content]);
             }
         }
@@ -335,7 +339,7 @@ internal sealed class StreamEngine : IDisposable
         return string.Join(Environment.NewLine, lines);
     }
 
-    private static SceneSource CloneSource(SceneSource source) => new() { Id = source.Id, Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color, X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled };
+    private static SceneSource CloneSource(SceneSource source) => new() { Id = source.Id, Kind = source.Kind, Name = source.Name, Content = source.Content, Color = source.Color, X = source.X, Y = source.Y, Width = source.Width, Height = source.Height, CropLeft = source.CropLeft, CropTop = source.CropTop, CropRight = source.CropRight, CropBottom = source.CropBottom, FontSize = source.FontSize, Enabled = source.Enabled, PlaybackPositionSeconds = source.PlaybackPositionSeconds };
 
     private static void CleanupTextFiles(EngineConfig config)
     {
@@ -497,3 +501,4 @@ internal sealed class StreamEngine : IDisposable
 
     private sealed record EngineConfig(List<StreamTarget> Targets, StudioScene Scene, string CaptureTarget, string? CameraDevice, string? AudioDevice, int Width, int Height, int Fps, string Bitrate, bool HardwareAvailable, bool SoftwareAvailable, IReadOnlyDictionary<string, string> TextFiles, IReadOnlyDictionary<string, string> PhoneCaptureInputs);
 }
+
