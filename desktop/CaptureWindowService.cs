@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using System.IO;
 
 namespace XStudio;
 
@@ -9,6 +10,7 @@ internal static class CaptureWindowService
 
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr state);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr handle);
+    [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr handle);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr handle, StringBuilder text, int maximum);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr handle, out NativeRect rectangle);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
@@ -16,7 +18,17 @@ internal static class CaptureWindowService
     public static IntPtr FindByTitle(string title)
     {
         if (string.IsNullOrWhiteSpace(title)) return IntPtr.Zero;
-        return Find(handle => ReadTitle(handle).Equals(title, StringComparison.OrdinalIgnoreCase));
+        var requested = Path.GetFileNameWithoutExtension(title.Trim());
+        var exact = Find(handle => ReadTitle(handle).Equals(title.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (exact != IntPtr.Zero) return exact;
+        // Window titles often gain a document name or status suffix while an app is running.
+        // Prefer a stable app/title fragment when an exact saved title no longer exists.
+        return Find(handle =>
+        {
+            var current = ReadTitle(handle);
+            return current.Contains(title.Trim(), StringComparison.OrdinalIgnoreCase)
+                || requested.Length >= 3 && current.Contains(requested, StringComparison.OrdinalIgnoreCase);
+        });
     }
 
     public static IReadOnlyList<string> GetVisibleWindowTitles()
@@ -58,7 +70,7 @@ internal static class CaptureWindowService
 
     public static bool IsUsable(IntPtr handle)
     {
-        if (handle == IntPtr.Zero || !IsWindowVisible(handle) || !GetWindowRect(handle, out var rect)) return false;
+        if (handle == IntPtr.Zero || !IsWindowVisible(handle) || IsIconic(handle) || !GetWindowRect(handle, out var rect)) return false;
         return rect.Right - rect.Left > 16 && rect.Bottom - rect.Top > 16;
     }
 
@@ -83,3 +95,4 @@ internal static class CaptureWindowService
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect { public int Left, Top, Right, Bottom; }
 }
+
