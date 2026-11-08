@@ -8,6 +8,7 @@ This alpha package includes the following separately licensed programs. Their no
 - **FFmpeg 9.0.2 (Gyan build)** — GPL-3.0 build with libx264 enabled. FFmpeg is a separate executable process. See [FFmpeg legal information](https://ffmpeg.org/legal.html) and [Gyan builds](https://www.gyan.dev/ffmpeg/builds/).
 - **.NET 10 Windows Desktop runtime** — bundled self-contained runtime. See the Microsoft notices included in the publish output.
 
-Apple Bonjour is **not redistributed** in this package because Apple's license does not permit external redistribution. If it is missing, X Studio downloads the Apple MSI directly from Apple's server, verifies its SHA-256 before use, and asks Windows for administrator approval to install the service.
+The bundled UxPlay for Windows runtime includes mDNSResponder for AirPlay discovery; X Studio does not install Apple Bonjour.
 
 This package is for alpha evaluation. Before public redistribution, provide the corresponding source code and any other materials required by the licenses of the bundled GPL/LGPL components.
+
