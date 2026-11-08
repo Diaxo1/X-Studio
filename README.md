@@ -1,0 +1,44 @@
+# X Studio
+
+X Studio is a lightweight Windows streaming-app prototype. Its current native app provides a compact live desk, a dedicated destination setup page, encrypted local storage for stream keys, and an FFmpeg-based RTMP engine.
+
+## Run from source
+
+Install the .NET 10 SDK and the runtime tools with `package-release.ps1`, or run from a machine with the existing FFmpeg, scrcpy, and MediaMTX WinGet packages:
+
+```powershell
+dotnet run --project desktop\desktop.csproj
+```
+
+If `dotnet` is not on `PATH`, use `"C:\Program Files\dotnet\dotnet.exe" run --project desktop\desktop.csproj`.
+
+## Build the Windows alpha installer kit
+
+Run `powershell -ExecutionPolicy Bypass -File .\package-release.ps1` to publish the self-contained Windows app, then run `powershell -ExecutionPolicy Bypass -File .\Build-Installer.ps1 -PackageZip .\dist\<package-name>.zip`. This creates a setup kit ZIP. Extract it and double-click `Install-XStudio.cmd` to choose an install folder, unpack the app and bundled dependencies, add a Start menu shortcut, and register an Apps & Features uninstaller. Setup is per-user and needs no administrator access or .NET runtime on the target PC. The app includes FFmpeg, MediaMTX, scrcpy/ADB, and the UxPlay runtime. Android phone casting needs USB debugging. iPhone casting downloads Apple's Bonjour installer directly from Apple on first use if that service is missing; X Studio verifies the installer hash and Windows asks for administrator approval. Apple's license does not permit us to redistribute Bonjour in the setup kit.
+
+The GitHub Actions workflow builds this setup kit on pushes to `main` or `master`, and can also be run manually from the Actions tab. Download the `XStudio-Windows-Alpha-Installer` artifact from a successful run.
+
+## Current streaming path
+
+- Captures the Windows desktop using FFmpeg `gdigrab`.
+- Captures one selected microphone through DirectShow, or disables audio.
+- Offers 720p30 and 480p30 output profiles.
+- Attempts Media Foundation H.264 encoding, then falls back to x264 ultrafast when hardware initialization fails.
+- Uses FFmpeg's tee muxer to send one shared encode to multiple configured RTMP/RTMPS outputs.
+- Can start a local, loopback-only MediaMTX RTMP receiver and add its URL as a selected test destination.
+- Adds Android phone screens as scene layers through bundled scrcpy. Connect over USB, enable Developer options → USB debugging, approve the phone's trust prompt, then use Settings → Phone Cast.
+- Adds an iPhone AirPlay receiver through bundled UxPlay for Windows. Keep the phone and PC on the same Wi-Fi, choose Screen Mirroring on iPhone, and select this PC. Add an iPhone Phone source to the scene to layer its receiver window over the selected desktop or game capture. Protected video apps may block mirroring.
+- The Live Desk keeps the active scene, display/game-window capture target, and camera selector in the top setup bar. Scene source layers can be dragged, resized, removed, and double-clicked in the preview. The stage preserves its 16:9 or 9:16 shape and shows the actual selected output dimensions. Wide and vertical profiles use different scenes and independent source layouts.
+- Includes reusable templates for gameplay, just chatting, vertical phone, screen tutorial, and vertical showcase. Save any active scene as a custom template; custom templates stay on this PC under `%LOCALAPPDATA%\XStudio\templates.json`.
+- Saves destination details under `%LOCALAPPDATA%\XStudio`; stream keys are protected with Windows DPAPI for the current Windows account.
+
+The Live desk's destination selector determines which configured outputs are included in the next broadcast. Add each platform's RTMP ingest URL and stream key on the Destinations page. X Studio does not authenticate with TikTok, YouTube, or Twitch; you must provide an ingest URL and key supported by your account. Do not share your stream key. FFmpeg receives the constructed output URL as a process argument while broadcasting, which may be visible to local process-inspection tools.
+
+## Scope and limits
+
+This is an early Windows proof of concept. The preview composes desktop/window, camera, phone, image, and text inputs through FFmpeg at reduced resolution and frame rate to limit overhead. GDI capture can still fail for specific windows or device combinations; the preview reports FFmpeg's capture error when that happens. A physical phone was not connected during this implementation, so pairing and capture still need a device smoke check. Desktop/system audio mixing and the third-party plugin API are not yet implemented. Check the stream output, encoder state, and machine load before relying on it for a live broadcast.
+
+The setup kit contains third-party GPL/LGPL programs (FFmpeg and UxPlay). See `THIRD-PARTY-NOTICES.md`; corresponding source code and notices must be provided before public redistribution. The Apple Bonjour installer is downloaded directly from Apple when required and is not bundled because Apple's license prohibits external redistribution. The alpha setup kit is currently unsigned, so Windows may show an unknown-publisher prompt.
+
+The source includes an earlier browser concept and Node engine spike; the native WPF app in `desktop` is the active implementation.
+
