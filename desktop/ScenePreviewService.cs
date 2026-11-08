@@ -117,7 +117,7 @@ internal sealed class ScenePreviewService : IDisposable
             }
             else if (source.Kind is "Display" or "App")
             {
-                var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindByTitle(source.Content);
+                var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindBySource(source);
                 if (source.Kind == "App" && window == IntPtr.Zero) { missingApps.Add(source.Id); continue; }
                 captureInputs[source.Id] = next++;
                 args.AddRange(["-thread_queue_size", "256", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", window == IntPtr.Zero ? "desktop" : CaptureWindowService.ToFfmpegInput(window)]);
@@ -154,7 +154,7 @@ internal sealed class ScenePreviewService : IDisposable
             if (source.Kind == "Text" || missingApps.Contains(source.Id))
             {
                 var maxCharacters = Math.Max(8, (int)(width * source.Width / 100 / Math.Max(1, source.FontSize * .56)));
-                var text = MakeTextFile(WrapText(missingApps.Contains(source.Id) ? "APP WINDOW NOT FOUND · OPEN IT OR REFRESH APPS" : source.Content, maxCharacters));
+                var text = MakeTextFile(WrapText(missingApps.Contains(source.Id) ? $"APP WINDOW NOT FOUND: {source.Content} · EDIT SOURCE AND SELECT THE OPEN WINDOW" : source.Content, maxCharacters));
                 var previewFontSize = Math.Max(8, (int)Math.Round(source.FontSize * width / (vertical ? 720d : 1280d)));
                 var color = missingApps.Contains(source.Id) ? "F04455" : source.Color.TrimStart('#');
                 filters.Add($"[layer{current}]drawtext=fontfile='{fontFile}':textfile='{EscapePath(text)}':fontsize={previewFontSize}:fontcolor=0x{color}:x=w*{Percent(source.X)}:y=h*{Percent(source.Y)}:box=1:boxcolor=black@0.72:boxborderw=6[layer{nextLayer}]");
