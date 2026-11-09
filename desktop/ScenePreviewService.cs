@@ -146,7 +146,8 @@ internal sealed class ScenePreviewService : IDisposable
                 var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindBySource(source);
                 if (source.Kind == "App" && window == IntPtr.Zero) { missingApps.Add(source.Id); continue; }
                 captureInputs[source.Id] = next++;
-                args.AddRange(["-thread_queue_size", "4", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", window == IntPtr.Zero ? "desktop" : CaptureWindowService.ToFfmpegInput(window)]);
+                var input = source.Kind == "Display" ? "desktop" : CaptureWindowService.ToFfmpegInput(source.Content);
+                args.AddRange(["-thread_queue_size", "4", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", input]);
             }
             else if ((source.Kind is "Video" or "Background") && source.Content != "transparent" && File.Exists(source.Content))
             {
