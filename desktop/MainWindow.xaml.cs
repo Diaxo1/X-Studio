@@ -951,7 +951,8 @@ public partial class MainWindow : Window
 
             var details = new StackPanel();
             details.Children.Add(new TextBlock { Text = destination.Name, FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = Brush("#F3F2EF") });
-            details.Children.Add(new TextBlock { Text = $"{destination.Platform}  ·  {GetServerLabel(destination.ServerUrl)}", FontSize = 11, Foreground = Brush("#999A9E"), Margin = new Thickness(0, 4, 0, 0) });
+            var outputShape = destination.Platform.Contains("TikTok", StringComparison.OrdinalIgnoreCase) ? "Portrait · 9:16" : "Wide · 16:9";
+            details.Children.Add(new TextBlock { Text = $"{destination.Platform}  ·  {outputShape}  ·  {GetServerLabel(destination.ServerUrl)}", FontSize = 11, Foreground = Brush("#999A9E"), Margin = new Thickness(0, 4, 0, 0) });
             details.Children.Add(new TextBlock { Text = destination.StreamKey.Length > 0 ? "Stream key saved · encrypted for this Windows account" : "Stream key missing", FontSize = 10, Foreground = Brush(destination.StreamKey.Length > 0 ? "#B6B7BB" : "#FF8790"), Margin = new Thickness(0, 5, 0, 0) });
             grid.Children.Add(details);
 
@@ -999,7 +1000,7 @@ public partial class MainWindow : Window
             select.Click += (_, _) => ToggleDestination(destination);
             DockPanel.SetDock(select, Dock.Left);
             line.Children.Add(select);
-            var name = MakeText(destination.Name, 11, Brush("#F3F2EF"));
+            var name = MakeText($"{destination.Name} · {(destination.Platform.Contains("TikTok", StringComparison.OrdinalIgnoreCase) ? "PORTRAIT" : "WIDE")}", 11, Brush("#F3F2EF"));
             name.FontWeight = FontWeights.SemiBold;
             line.Children.Add(name);
             LiveDestinationList.Items.Add(line);
@@ -1076,15 +1077,7 @@ public partial class MainWindow : Window
             EngineErrorText.Text = string.Empty;
             await scenePreview.StopAsync();
             PreviewStatusText.Text = "PREVIEW PAUSED DURING BROADCAST";
-            var outputScene = new StudioScene
-            {
-                Id = activeScene.Id,
-                Name = activeScene.Name,
-                Format = verticalPreview ? "Vertical · 9:16" : "Wide · 16:9",
-                Template = activeScene.Template,
-                Sources = activeScene.Sources
-            };
-            await engine.StartAsync(selected, outputScene, captureTarget, camera, audio, qualityTag, phoneInputs);
+            await engine.StartAsync(selected, activeScene, captureTarget, camera, audio, qualityTag, phoneInputs);
         }
         catch (Exception ex)
         {
@@ -1157,7 +1150,7 @@ public partial class MainWindow : Window
         if (verticalPreview == vertical) return;
         verticalPreview = vertical;
         UpdatePreviewProfileButtons();
-        PreviewStatusText.Text = vertical ? "SWITCHING SHARED OUTPUT TO TIKTOK · 9:16" : "SWITCHING SHARED OUTPUT TO WIDE · 16:9";
+        PreviewStatusText.Text = vertical ? "SWITCHING PREVIEW TO TIKTOK · 9:16" : "SWITCHING PREVIEW TO WIDE · 16:9";
         DrawActiveScenePreview();
         _ = StartActiveScenePreviewAsync();
     }
