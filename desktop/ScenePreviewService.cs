@@ -21,7 +21,9 @@ internal sealed class ScenePreviewService : IDisposable
 
     public async Task StartAsync(StudioScene scene, string captureTarget, string? cameraDevice, IReadOnlyDictionary<string, string> phoneCaptureInputs)
     {
-        Stop();
+        // A scene change replaces the preview process. Stop it asynchronously so
+        // killing a GDI / camera capture process cannot stall WPF's UI thread.
+        await StopAsync();
         var cameraAvailable = !scene.Sources.Any(source => source.Enabled && source.Kind == "Camera")
             || (!string.IsNullOrWhiteSpace(cameraDevice) && await IsCameraAvailableAsync(cameraDevice));
         var arguments = BuildArguments(scene, captureTarget, cameraDevice, cameraAvailable, phoneCaptureInputs);
@@ -51,6 +53,11 @@ internal sealed class ScenePreviewService : IDisposable
 
     public void Stop()
     {
+        _ = StopAsync();
+    }
+
+    public async Task StopAsync()
+    {
         Process? child;
         lock (gate)
         {
@@ -58,11 +65,27 @@ internal sealed class ScenePreviewService : IDisposable
             child = process;
             process = null;
         }
-        if (child is not null)
+        if (child is null)
         {
-            try { if (!child.HasExited) child.Kill(entireProcessTree: true); } catch { }
-            child.Dispose();
+            CleanupTextFiles();
+            return;
         }
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                try { if (!child.HasExited) child.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { }
+            });
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await child.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException) { }
+        catch (InvalidOperationException) { }
+        catch (System.ComponentModel.Win32Exception) { }
+        finally { child.Dispose(); }
         CleanupTextFiles();
     }
 
