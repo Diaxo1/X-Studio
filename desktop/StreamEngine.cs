@@ -14,7 +14,6 @@ internal sealed class StreamEngine : IDisposable
     private Process? process;
     private bool stopRequested;
     private bool hardwareAttempt;
-    private bool frameSeen;
     private string lastStderr = string.Empty;
     private string state = "Idle";
     private string encoder = "Not started";
@@ -79,31 +78,35 @@ internal sealed class StreamEngine : IDisposable
         var softwareAvailable = encoderList.Contains("libx264", StringComparison.Ordinal);
         if (!hardwareAvailable && !softwareAvailable) throw new InvalidOperationException("This FFmpeg build has no H.264 encoder.");
 
-        var vertical = scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase);
-        var (width, height, fps, bitrate) = quality == "480p30"
-            ? vertical ? (480, 854, 30, "1200k") : (854, 480, 30, "1200k")
-            : vertical ? (720, 1280, 30, "2500k") : (1280, 720, 30, "2500k");
-        var targets = destinations.Select(destination => new StreamTarget(destination.Id, destination.Name, destination.ServerUrl, BuildOutputUrl(destination))).ToList();
+        var (width, height, verticalWidth, verticalHeight, fps, bitrate) = quality == "480p30"
+            ? (854, 480, 480, 854, 30, "1200k")
+            : (1280, 720, 720, 1280, 30, "2500k");
+        var targets = destinations.Select(destination => new StreamTarget(
+            destination.Id, destination.Name, destination.ServerUrl, BuildOutputUrl(destination),
+            destination.Platform.Contains("TikTok", StringComparison.OrdinalIgnoreCase))).ToList();
         var sceneSnapshot = new StudioScene { Id = scene.Id, Name = scene.Name, Format = scene.Format, Template = scene.Template, Sources = scene.Sources.Select(CloneSource).ToList() };
         var textFiles = new Dictionary<string, string>();
+        var verticalTextFiles = new Dictionary<string, string>();
         foreach (var source in sceneSnapshot.Sources.Where(source => source.Enabled && source.Kind == "Text"))
         {
-            var path = Path.Combine(Path.GetTempPath(), $"xstudio-{Guid.NewGuid():N}.txt");
-            await File.WriteAllTextAsync(path, WrapText(source.Content, Math.Max(8, (int)(width * source.Width / 100 / Math.Max(1, source.FontSize * .56)))));
-            textFiles[source.Id] = path;
+            var widePath = Path.Combine(Path.GetTempPath(), $"xstudio-wide-{Guid.NewGuid():N}.txt");
+            var verticalPath = Path.Combine(Path.GetTempPath(), $"xstudio-vertical-{Guid.NewGuid():N}.txt");
+            await File.WriteAllTextAsync(widePath, WrapText(source.Content, Math.Max(8, (int)(width * source.Width / 100 / Math.Max(1, source.FontSize * .56)))));
+            await File.WriteAllTextAsync(verticalPath, WrapText(source.Content, Math.Max(8, (int)(verticalWidth * source.Width / 100 / Math.Max(1, source.FontSize * .56)))));
+            textFiles[source.Id] = widePath;
+            verticalTextFiles[source.Id] = verticalPath;
         }
-        var config = new EngineConfig(targets, sceneSnapshot, captureTarget, cameraDevice, audioDevice, width, height, fps, bitrate, hardwareAvailable, softwareAvailable, textFiles, phoneCaptureInputs);
+        var config = new EngineConfig(targets, sceneSnapshot, captureTarget, cameraDevice, audioDevice, width, height, verticalWidth, verticalHeight, fps, bitrate, bitrate, hardwareAvailable, softwareAvailable, textFiles, verticalTextFiles, phoneCaptureInputs);
         lock (gate)
         {
             if (process is not null) throw new InvalidOperationException("A broadcast is already running.");
             currentConfig = config;
             stopRequested = false;
-            frameSeen = false;
             hardwareAttempt = hardwareAvailable;
             lastStderr = string.Empty;
             state = "Starting";
             encoder = hardwareAvailable ? "Media Foundation hardware" : "x264 ultrafast software";
-            message = $"Preparing {scene.Name} and connecting RTMP outputs.";
+            message = $"Preparing {scene.Name}; TikTok portrait and wide outputs share one synchronized capture.";
             destinationStates = targets.ToDictionary(target => target.Id, _ => "Connecting");
         }
         Publish();
@@ -233,30 +236,67 @@ internal sealed class StreamEngine : IDisposable
             args.AddRange(["-thread_queue_size", "64", "-f", "dshow", "-audio_buffer_size", "100", "-i", $"audio={config.AudioDevice}"]);
         }
 
-        var graph = BuildSceneGraph(config, cameraInputs, imageInputs, phoneInputs, captureInputs, videoInputs);
-        args.AddRange(["-filter_complex", graph, "-map", "[sceneout]"]);
+        var wideTargets = config.Targets.Where(target => !target.Vertical).ToList();
+        var verticalTargets = config.Targets.Where(target => target.Vertical).ToList();
+        var hasBothProfiles = wideTargets.Count > 0 && verticalTargets.Count > 0;
+        var wideConfig = config with
+        {
+            Scene = new StudioScene { Id = config.Scene.Id, Name = config.Scene.Name, Format = "Wide · 16:9", Template = config.Scene.Template, Sources = config.Scene.Sources },
+            Width = config.Width, Height = config.Height, Bitrate = config.Bitrate
+        };
+        var verticalConfig = config with
+        {
+            Scene = new StudioScene { Id = config.Scene.Id, Name = config.Scene.Name, Format = "Vertical · 9:16", Template = config.Scene.Template, Sources = config.Scene.Sources },
+            Width = config.VerticalWidth, Height = config.VerticalHeight, Bitrate = config.VerticalBitrate, TextFiles = config.VerticalTextFiles
+        };
+        var graphs = new List<string>();
+        if (hasBothProfiles)
+        {
+            for (var index = 0; index < nextInput; index++)
+                if (!audioInput.HasValue || index != audioInput.Value)
+                    graphs.Add($"[{index}:v]split=2[v{index}wide][v{index}vertical]");
+            graphs.Add(BuildSceneGraph(wideConfig, cameraInputs, imageInputs, phoneInputs, captureInputs, videoInputs, "wide"));
+            graphs.Add(BuildSceneGraph(verticalConfig, cameraInputs, imageInputs, phoneInputs, captureInputs, videoInputs, "vertical"));
+        }
+        else
+        {
+            var verticalOnly = verticalTargets.Count > 0;
+            var variantConfig = verticalOnly ? verticalConfig : wideConfig;
+            graphs.Add(BuildSceneGraph(variantConfig, cameraInputs, imageInputs, phoneInputs, captureInputs, videoInputs, string.Empty));
+        }
+        args.AddRange(["-filter_complex", string.Join(';', graphs)]);
+
+        if (wideTargets.Count > 0)
+            AddOutputVariant(args, hasBothProfiles ? "[sceneoutwide]" : "[sceneout]", wideTargets, config, audioInput, useHardware, config.Bitrate);
+        if (verticalTargets.Count > 0)
+            AddOutputVariant(args, hasBothProfiles ? "[sceneoutvertical]" : "[sceneout]", verticalTargets, config, audioInput, useHardware, config.VerticalBitrate);
+        return args;
+    }
+
+    private static void AddOutputVariant(List<string> args, string videoLabel, IReadOnlyCollection<StreamTarget> targets, EngineConfig config, int? audioInput, bool useHardware, string bitrate)
+    {
+        if (targets.Count == 0) return;
+        args.AddRange(["-map", videoLabel]);
+        if (audioInput.HasValue) args.AddRange(["-map", $"{audioInput.Value}:a:0"]);
         if (useHardware)
             args.AddRange(["-c:v", "h264_mf", "-hw_encoding", "1", "-scenario", "live_streaming", "-rate_control", "cbr"]);
         else
             args.AddRange(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-profile:v", "baseline"]);
-        args.AddRange(["-b:v", config.Bitrate, "-maxrate", config.Bitrate, "-bufsize", $"{int.Parse(config.Bitrate[..^1]) * 2}k", "-g", (config.Fps * 2).ToString(), "-pix_fmt", "yuv420p"]);
-        if (audioInput.HasValue)
-            args.AddRange(["-map", $"{audioInput.Value}:a:0", "-c:a", "aac", "-b:a", "128k", "-ar", "44100"]);
-        else
-            args.Add("-an");
-
-        var outputs = string.Join('|', config.Targets.Select(target => $"[f=flv:onfail=ignore]{EscapeTeeUrl(target.OutputUrl)}"));
+        args.AddRange(["-b:v", bitrate, "-maxrate", bitrate, "-bufsize", $"{int.Parse(bitrate[..^1]) * 2}k", "-g", (config.Fps * 2).ToString(), "-pix_fmt", "yuv420p"]);
+        if (audioInput.HasValue) args.AddRange(["-c:a", "aac", "-b:a", "128k", "-ar", "44100"]);
+        else args.Add("-an");
+        var outputs = string.Join('|', targets.Select(target => $"[f=flv:onfail=ignore]{EscapeTeeUrl(target.OutputUrl)}"));
         args.AddRange(["-use_fifo", "1", "-f", "tee", outputs]);
-        return args;
     }
 
-    private static string BuildSceneGraph(EngineConfig config, IReadOnlyDictionary<string, int> cameraInputs, IReadOnlyDictionary<string, int> imageInputs, IReadOnlyDictionary<string, int> phoneInputs, IReadOnlyDictionary<string, int> captureInputs, IReadOnlyDictionary<string, int> videoInputs)
+    private static string BuildSceneGraph(EngineConfig config, IReadOnlyDictionary<string, int> cameraInputs, IReadOnlyDictionary<string, int> imageInputs, IReadOnlyDictionary<string, int> phoneInputs, IReadOnlyDictionary<string, int> captureInputs, IReadOnlyDictionary<string, int> videoInputs, string outputProfile)
     {
         var vertical = config.Scene.Format.StartsWith("Vertical", StringComparison.OrdinalIgnoreCase);
+        string VideoInput(int index) => outputProfile.Length == 0 ? $"[{index}:v]" : $"[v{index}{outputProfile}]";
         var fit = vertical
             ? $"scale={config.Width}:{config.Height}:force_original_aspect_ratio=increase,crop={config.Width}:{config.Height}"
             : $"scale={config.Width}:{config.Height}:force_original_aspect_ratio=decrease,pad={config.Width}:{config.Height}:(ow-iw)/2:(oh-ih)/2";
-        var filters = new List<string> { $"[0:v]fps={config.Fps},{fit}[layer0]" };
+        var filters = new List<string> { $"{VideoInput(0)}fps={config.Fps},{fit}[layer0]" };
         var layer = 0;
         foreach (var source in config.Scene.Sources.Where(source => source.Enabled))
         {
@@ -271,41 +311,42 @@ internal sealed class StreamEngine : IDisposable
             }
             else if (source.Kind == "Image" && imageInputs.TryGetValue(source.Id, out var imageInput))
             {
-                filters.Add($"[{imageInput}:v]{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
+                filters.Add($"{VideoInput(imageInput)}{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
                 filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
             }
             else if (source.Kind == "Camera" && cameraInputs.TryGetValue(source.Id, out var cameraInput))
             {
-                filters.Add($"[{cameraInput}:v]fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
+                filters.Add($"{VideoInput(cameraInput)}fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
                 filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
             }
             else if (source.Kind == "Phone" && phoneInputs.TryGetValue(source.Id, out var phoneInput))
             {
-                filters.Add($"[{phoneInput}:v]fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
+                filters.Add($"{VideoInput(phoneInput)}fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
                 filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
             }
             else if (captureInputs.TryGetValue(source.Id, out var captureIndex))
             {
-                filters.Add($"[{captureIndex}:v]fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
+                filters.Add($"{VideoInput(captureIndex)}fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
                 filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
             }
             else if (videoInputs.TryGetValue(source.Id, out var videoIndex))
             {
                 if (source.Kind == "Background")
                 {
-                    filters.Add($"[{videoIndex}:v]fps={config.Fps},{CropFilter(source)}scale={config.Width}:{config.Height}:force_original_aspect_ratio=increase,crop={config.Width}:{config.Height}[media{nextLayer}]");
+                    filters.Add($"{VideoInput(videoIndex)}fps={config.Fps},{CropFilter(source)}scale={config.Width}:{config.Height}:force_original_aspect_ratio=increase,crop={config.Width}:{config.Height}[media{nextLayer}]");
                     filters.Add($"[media{nextLayer}]copy[layer{nextLayer}]");
                 }
                 else
                 {
-                    filters.Add($"[{videoIndex}:v]fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
+                    filters.Add($"{VideoInput(videoIndex)}fps={config.Fps},{CropFilter(source)}{ScaleFilter(source, config.Width, config.Height)}[media{nextLayer}]");
                     filters.Add($"[layer{layer}][media{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
                 }
             }
             else { continue; }
             layer = nextLayer;
         }
-        filters.Add($"[layer{layer}]format=yuv420p[sceneout]");
+        var outputLabel = outputProfile.Length == 0 ? "sceneout" : $"sceneout{outputProfile}";
+        filters.Add($"[layer{layer}]format=yuv420p[{outputLabel}]");
         return string.Join(';', filters);
     }
 
@@ -343,7 +384,7 @@ internal sealed class StreamEngine : IDisposable
 
     private static void CleanupTextFiles(EngineConfig config)
     {
-        foreach (var path in config.TextFiles.Values)
+        foreach (var path in config.TextFiles.Values.Concat(config.VerticalTextFiles.Values))
             try { File.Delete(path); } catch (IOException) { }
     }
 
@@ -357,9 +398,8 @@ internal sealed class StreamEngine : IDisposable
             if (lastStderr.Length > 10000) lastStderr = lastStderr[^10000..];
             if (line.StartsWith("frame=", StringComparison.Ordinal))
             {
-                frameSeen = true;
                 state = "Live";
-                message = $"{config.Scene.Name} is composited and sending one shared encode to selected outputs.";
+                message = $"{config.Scene.Name} is sending synchronized wide and portrait outputs.";
                 foreach (var target in config.Targets)
                     if (destinationStates.TryGetValue(target.Id, out var status) && status == "Connecting") destinationStates[target.Id] = "Sending";
                 publish = true;
@@ -391,7 +431,7 @@ internal sealed class StreamEngine : IDisposable
             process = null;
             userStopped = stopRequested;
             errorTail = lastStderr;
-            fallback = !userStopped && usedHardware && !frameSeen && LooksLikeHardwareFailure(errorTail) && config.SoftwareAvailable;
+            fallback = !userStopped && usedHardware && LooksLikeHardwareFailure(errorTail) && config.SoftwareAvailable;
             if (userStopped)
             {
                 state = "Idle";
@@ -491,7 +531,7 @@ internal sealed class StreamEngine : IDisposable
 
     public void Dispose() => Stop();
 
-    private sealed record StreamTarget(string Id, string Name, string ServerUrl, string OutputUrl);
+    private sealed record StreamTarget(string Id, string Name, string ServerUrl, string OutputUrl, bool Vertical);
     private static async Task<bool> CanOpenCameraAsync(string device)
     {
         var args = new List<string> { "-hide_banner", "-loglevel", "error", "-thread_queue_size", "64", "-f", "dshow", "-i", $"video={device}", "-frames:v", "1", "-f", "null", "-" };
@@ -499,6 +539,6 @@ internal sealed class StreamEngine : IDisposable
         catch (InvalidOperationException) { return false; }
     }
 
-    private sealed record EngineConfig(List<StreamTarget> Targets, StudioScene Scene, string CaptureTarget, string? CameraDevice, string? AudioDevice, int Width, int Height, int Fps, string Bitrate, bool HardwareAvailable, bool SoftwareAvailable, IReadOnlyDictionary<string, string> TextFiles, IReadOnlyDictionary<string, string> PhoneCaptureInputs);
+    private sealed record EngineConfig(List<StreamTarget> Targets, StudioScene Scene, string CaptureTarget, string? CameraDevice, string? AudioDevice, int Width, int Height, int VerticalWidth, int VerticalHeight, int Fps, string Bitrate, string VerticalBitrate, bool HardwareAvailable, bool SoftwareAvailable, IReadOnlyDictionary<string, string> TextFiles, IReadOnlyDictionary<string, string> VerticalTextFiles, IReadOnlyDictionary<string, string> PhoneCaptureInputs);
 }
 
