@@ -216,7 +216,7 @@ internal sealed class StreamEngine : IDisposable
             {
                 var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindBySource(source);
                 captureInputs[source.Id] = nextInput++;
-                var input = source.Kind == "Display" ? "desktop" : CaptureWindowService.ToFfmpegInput(source.Content);
+                var input = source.Kind == "Display" ? "desktop" : CaptureWindowService.ToFfmpegInput(CaptureWindowService.GetWindowTitle(window));
                 args.AddRange(["-thread_queue_size", "8", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", input]);
             }
             else if ((source.Kind is "Video" or "Background") && source.Content != "transparent")
