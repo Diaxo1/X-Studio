@@ -130,6 +130,11 @@ internal static class CaptureWindowService
 
     public static string ToFfmpegInput(IntPtr handle) => $"hwnd=0x{handle.ToInt64():X}";
 
+    // Use FFmpeg's title selector for application layers. It asks gdigrab to
+    // resolve the target window at capture time, avoiding a stale HWND when an
+    // app recreates its top-level window after the source was saved.
+    public static string ToFfmpegInput(string title) => $"title={title}";
+
     public static bool IsUsable(IntPtr handle)
     {
         if (handle == IntPtr.Zero || !IsWindowVisible(handle) || IsIconic(handle) || !GetWindowRect(handle, out var rect)) return false;
