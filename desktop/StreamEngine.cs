@@ -330,7 +330,8 @@ internal sealed class StreamEngine : IDisposable
                 if (source.Kind == "Background")
                 {
                     filters.Add($"{VideoInput(videoIndex)}fps={config.Fps},{CropFilter(source)}scale={config.Width}:{config.Height}:force_original_aspect_ratio=increase,crop={config.Width}:{config.Height}[media{nextLayer}]");
-                    filters.Add($"[media{nextLayer}]copy[layer{nextLayer}]");
+                    filters.Add($"[media{nextLayer}]setpts=PTS-STARTPTS[bkg{nextLayer}]");
+                    filters.Add($"[layer{layer}][bkg{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
                 }
                 else
                 {
