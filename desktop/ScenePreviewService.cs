@@ -115,7 +115,6 @@ internal sealed class ScenePreviewService : IDisposable
         var phones = new Dictionary<string, int>();
         var captureInputs = new Dictionary<string, int>();
         var videoInputs = new Dictionary<string, int>();
-        var missingApps = new HashSet<string>();
         var captured = new HashSet<string>();
         var next = 1;
         foreach (var source in scene.Sources.Where(source => source.Enabled))
@@ -143,10 +142,11 @@ internal sealed class ScenePreviewService : IDisposable
             }
             else if (source.Kind is "Display" or "App")
             {
-                var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindBySource(source);
-                if (source.Kind == "App" && window == IntPtr.Zero) { missingApps.Add(source.Id); continue; }
                 captureInputs[source.Id] = next++;
-                var input = source.Kind == "Display" ? "desktop" : CaptureWindowService.ToFfmpegInput(CaptureWindowService.GetWindowTitle(window));
+                // Let gdigrab resolve the selected app title itself. Requiring our
+                // own HWND lookup first incorrectly rejected valid app windows
+                // (notably packaged and Chromium apps) and replaced them with black.
+                var input = source.Kind == "Display" ? "desktop" : CaptureWindowService.ToFfmpegInput(source.Content);
                 args.AddRange(["-thread_queue_size", "4", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", input]);
             }
             else if ((source.Kind is "Video" or "Background") && source.Content != "transparent" && File.Exists(source.Content))
@@ -162,7 +162,7 @@ internal sealed class ScenePreviewService : IDisposable
         }
 
         foreach (var source in scene.Sources.Where(source => source.Enabled))
-            if (source.Kind == "Text" || missingApps.Contains(source.Id) || source.Kind == "Image" && images.ContainsKey(source.Id)
+            if (source.Kind == "Text" || source.Kind == "Image" && images.ContainsKey(source.Id)
                 || source.Kind == "Camera" && camera.ContainsKey(source.Id)
                 || source.Kind == "Phone" && phones.ContainsKey(source.Id)
                 || (source.Kind is "Display" or "App") && captureInputs.ContainsKey(source.Id)
@@ -178,12 +178,12 @@ internal sealed class ScenePreviewService : IDisposable
         foreach (var source in scene.Sources.Where(source => source.Enabled))
         {
             var nextLayer = current + 1;
-            if (source.Kind == "Text" || missingApps.Contains(source.Id))
+            if (source.Kind == "Text")
             {
                 var maxCharacters = Math.Max(8, (int)(width * source.Width / 100 / Math.Max(1, source.FontSize * .56)));
-                var text = MakeTextFile(WrapText(missingApps.Contains(source.Id) ? $"APP WINDOW NOT FOUND: {source.Content} · EDIT SOURCE AND SELECT THE OPEN WINDOW" : source.Content, maxCharacters));
+                var text = MakeTextFile(WrapText(source.Content, maxCharacters));
                 var previewFontSize = Math.Max(8, (int)Math.Round(source.FontSize * width / (vertical ? 720d : 1280d)));
-                var color = missingApps.Contains(source.Id) ? "F04455" : source.Color.TrimStart('#');
+                var color = source.Color.TrimStart('#');
                 filters.Add($"[layer{current}]drawtext=fontfile='{fontFile}':textfile='{EscapePath(text)}':fontsize={previewFontSize}:fontcolor=0x{color}:x=w*{Percent(source.X)}:y=h*{Percent(source.Y)}:box=1:boxcolor=black@0.72:boxborderw=6[layer{nextLayer}]");
             }
             else if (images.TryGetValue(source.Id, out var imageInput))
