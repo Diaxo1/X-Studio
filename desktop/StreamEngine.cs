@@ -69,8 +69,6 @@ internal sealed class StreamEngine : IDisposable
             if (!File.Exists(source.Content)) throw new InvalidOperationException($"The image for {source.Name} could not be found. Edit the scene source and choose its file again.");
         foreach (var source in scene.Sources.Where(source => source.Enabled && (source.Kind == "Video" || source.Kind == "Background" && source.Content != "transparent")))
             if (!File.Exists(source.Content)) throw new InvalidOperationException($"The media for {source.Name} could not be found. Edit the scene source and choose its file again.");
-        foreach (var source in scene.Sources.Where(source => source.Enabled && source.Kind == "App"))
-            if (CaptureWindowService.FindBySource(source) == IntPtr.Zero) throw new InvalidOperationException($"X Studio couldn't resolve the selected window for {source.Name}. Edit the source and choose the open app again.");
         foreach (var destination in destinations) ValidateDestination(destination);
 
         var encoderList = await RunAndCollectAsync(["-hide_banner", "-encoders"], 10);
@@ -214,9 +212,8 @@ internal sealed class StreamEngine : IDisposable
             }
             else if (source.Kind is "Display" or "App")
             {
-                var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindBySource(source);
                 captureInputs[source.Id] = nextInput++;
-                var input = source.Kind == "Display" ? "desktop" : CaptureWindowService.ToFfmpegInput(CaptureWindowService.GetWindowTitle(window));
+                var input = source.Kind == "Display" ? "desktop" : CaptureWindowService.ToFfmpegInput(source.Content);
                 args.AddRange(["-thread_queue_size", "8", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", input]);
             }
             else if ((source.Kind is "Video" or "Background") && source.Content != "transparent")
