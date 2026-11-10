@@ -63,8 +63,6 @@ internal sealed class StreamEngine : IDisposable
             if (!phoneCaptureInputs.ContainsKey(source.Id))
                 throw new InvalidOperationException($"The {source.Content} screen is not visible yet. Start screen mirroring and wait for the phone display to appear before going live.");
         var sceneOwnsCapture = scene.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background"));
-        if (!sceneOwnsCapture && captureTarget != "desktop" && CaptureWindowService.FindByTitle(captureTarget) == IntPtr.Zero)
-            throw new InvalidOperationException("The selected app window is no longer open. Reopen it or choose it again in Capture settings.");
         foreach (var source in scene.Sources.Where(source => source.Enabled && source.Kind == "Image"))
             if (!File.Exists(source.Content)) throw new InvalidOperationException($"The image for {source.Name} could not be found. Edit the scene source and choose its file again.");
         foreach (var source in scene.Sources.Where(source => source.Enabled && (source.Kind == "Video" || source.Kind == "Background" && source.Content != "transparent")))
@@ -180,12 +178,12 @@ internal sealed class StreamEngine : IDisposable
     private static List<string> BuildArguments(EngineConfig config, bool useHardware)
     {
         var hasExplicitCapture = config.Scene.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background"));
-        var captureInput = config.CaptureTarget == "desktop" ? "desktop" : CaptureWindowService.ToFfmpegInput(CaptureWindowService.FindByTitle(config.CaptureTarget));
+        var captureInput = config.CaptureTarget is "desktop" or "transparent" ? "desktop" : CaptureWindowService.ToFfmpegInput(config.CaptureTarget);
         var args = new List<string>
         {
             "-hide_banner", "-nostats", "-loglevel", "warning", "-stats_period", "1", "-progress", "pipe:2", "-filter_threads", "2", "-filter_complex_threads", "2"
         };
-        if (hasExplicitCapture) args.AddRange(["-f", "lavfi", "-i", $"color=c=black:s={config.Width}x{config.Height}:r={config.Fps}"]);
+        if (hasExplicitCapture || config.CaptureTarget == "transparent") args.AddRange(["-f", "lavfi", "-i", $"color=c=black:s={config.Width}x{config.Height}:r={config.Fps}"]);
         else args.AddRange(["-thread_queue_size", "8", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "1", "-i", captureInput]);
         var cameraInputs = new Dictionary<string, int>();
         var imageInputs = new Dictionary<string, int>();
