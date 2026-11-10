@@ -101,14 +101,14 @@ internal sealed class ScenePreviewService : IDisposable
         var hasExplicitCapture = scene.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background"));
         var capture = "desktop";
         CaptureTargetFallback = false;
-        if (!hasExplicitCapture && captureTarget != "desktop")
+        if (!hasExplicitCapture && captureTarget != "desktop" && captureTarget != "transparent")
         {
-            var targetWindow = CaptureWindowService.FindByTitle(captureTarget);
-            if (targetWindow != IntPtr.Zero) capture = CaptureWindowService.ToFfmpegInput(targetWindow);
-            else CaptureTargetFallback = true;
+            // Older saved profiles can still contain a window target. Let
+            // gdigrab resolve it by title instead of feeding it a stale HWND.
+            capture = CaptureWindowService.ToFfmpegInput(captureTarget);
         }
         var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostats", "-filter_threads", "1", "-filter_complex_threads", "1" };
-        if (hasExplicitCapture) args.AddRange(["-f", "lavfi", "-i", $"color=c=black:s={width}x{height}:r={fps}"]);
+        if (hasExplicitCapture || captureTarget == "transparent") args.AddRange(["-f", "lavfi", "-i", $"color=c=black:s={width}x{height}:r={fps}"]);
         else args.AddRange(["-thread_queue_size", "4", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", capture]);
         var camera = new Dictionary<string, int>();
         var images = new Dictionary<string, int>();
