@@ -243,22 +243,17 @@ public partial class MainWindow : Window
     {
         CaptureTargetCombo.Items.Clear(); LiveCaptureTargetCombo.Items.Clear();
         var desktop = new CaptureChoice("Full screen · entire desktop", "desktop");
+        var transparent = new CaptureChoice("Transparent canvas", "transparent");
+        CaptureTargetCombo.Items.Add(transparent); LiveCaptureTargetCombo.Items.Add(transparent);
         CaptureTargetCombo.Items.Add(desktop); LiveCaptureTargetCombo.Items.Add(desktop);
-        foreach (var process in Process.GetProcesses())
-        {
-            string title;
-            try { title = process.MainWindowTitle; } catch { continue; }
-            if (!string.IsNullOrWhiteSpace(title) && title != Title && !title.Equals("Program Manager", StringComparison.OrdinalIgnoreCase) && !CaptureTargetCombo.Items.Cast<CaptureChoice>().Any(item => item.Value.Equals(title, StringComparison.OrdinalIgnoreCase)))
-            {
-                var choice = new CaptureChoice($"Window · {title}", title);
-                CaptureTargetCombo.Items.Add(choice); LiveCaptureTargetCombo.Items.Add(choice);
-            }
-            process.Dispose();
-        }
+        // App windows are scene layers. Keep the canvas selector focused on
+        // the two canvas modes requested: transparent or full-screen desktop.
         var targetValue = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase)
-            ? preferences.CaptureTarget[7..]
-            : preferences.CaptureTarget;
+            ? "desktop" : preferences.CaptureTarget;
         var selected = CaptureTargetCombo.Items.Cast<CaptureChoice>().FirstOrDefault(item => item.Value == targetValue) ?? (CaptureChoice)CaptureTargetCombo.Items[0];
+        var migrated = preferences.CaptureTarget != selected.Value;
+        preferences.CaptureTarget = selected.Value;
+        if (migrated) SaveCapturePreferences();
         CaptureTargetCombo.SelectedItem = selected;
         LiveCaptureTargetCombo.SelectedItem = LiveCaptureTargetCombo.Items.Cast<CaptureChoice>().FirstOrDefault(item => item.Value == selected.Value) ?? LiveCaptureTargetCombo.Items[0];
     }
@@ -267,7 +262,7 @@ public partial class MainWindow : Window
     {
         if (syncingDevices) return;
         if (CaptureTargetCombo?.SelectedItem is not CaptureChoice choice) return;
-        preferences.CaptureTarget = choice.Value == "desktop" ? "desktop" : $"window:{choice.Value}";
+        preferences.CaptureTarget = choice.Value;
         if (LiveCaptureTargetCombo.SelectedItem is not CaptureChoice current || current.Value != choice.Value)
         {
             syncingDevices = true; LiveCaptureTargetCombo.SelectedItem = LiveCaptureTargetCombo.Items.Cast<CaptureChoice>().FirstOrDefault(item => item.Value == choice.Value); syncingDevices = false;
@@ -281,7 +276,7 @@ public partial class MainWindow : Window
     {
         if (syncingDevices || LiveCaptureTargetCombo?.SelectedItem is not CaptureChoice choice) return;
         syncingDevices = true; CaptureTargetCombo.SelectedItem = CaptureTargetCombo.Items.Cast<CaptureChoice>().FirstOrDefault(item => item.Value == choice.Value); syncingDevices = false;
-        preferences.CaptureTarget = choice.Value == "desktop" ? "desktop" : $"window:{choice.Value}";
+        preferences.CaptureTarget = choice.Value;
         SaveCapturePreferences(); DrawActiveScenePreview(); _ = StartActiveScenePreviewAsync();
     }
 
@@ -1041,7 +1036,7 @@ public partial class MainWindow : Window
             return;
         }
         var camera = string.IsNullOrWhiteSpace(preferences.CameraDevice) ? null : preferences.CameraDevice;
-        var captureTarget = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
+        var captureTarget = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : preferences.CaptureTarget;
         if (activeScene.Sources.Any(source => source.Enabled && source.Kind == "Phone" && source.Content == "Android") && phoneCast.AndroidStatus != "Android receiver running")
         {
             try { PhoneCastStatus.Text = await phoneCast.StartAndroidAsync(); LoadWindowChoices(); }
@@ -1182,7 +1177,7 @@ public partial class MainWindow : Window
                 previewInputSignature = GetPreviewInputSignature(scene, phoneInputs);
                 var target = scene.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background"))
                     ? "desktop"
-                    : preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
+                    : preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : preferences.CaptureTarget;
                 var previewScene = new StudioScene
                 {
                     Id = scene.Id,
@@ -1218,7 +1213,7 @@ public partial class MainWindow : Window
 
     private string GetPreviewInputSignature(StudioScene scene, IReadOnlyDictionary<string, string> phoneInputs)
     {
-        var captureTarget = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : "desktop";
+        var captureTarget = preferences.CaptureTarget.StartsWith("window:", StringComparison.OrdinalIgnoreCase) ? preferences.CaptureTarget[7..] : preferences.CaptureTarget;
         var window = captureTarget == "desktop" ? "desktop" : CaptureWindowService.FindByTitle(captureTarget).ToInt64().ToString();
         return string.Join("|", scene.Id, captureTarget, window, preferences.CameraDevice,
             string.Join(",", phoneInputs.OrderBy(item => item.Key).Select(item => $"{item.Key}:{item.Value}")),
