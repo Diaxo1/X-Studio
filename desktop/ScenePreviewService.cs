@@ -210,8 +210,12 @@ internal sealed class ScenePreviewService : IDisposable
             {
                 var fitMedia = source.Kind == "Background" ? $"{CropFilter(source)}scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}" : $"{CropFilter(source)}{ScaleFilter(source, width, height)}";
                 filters.Add($"[{videoIndex}:v]fps={fps},{fitMedia}[media{nextLayer}]");
-                if (source.Kind == "Background") filters.Add($"[media{nextLayer}]setpts=PTS-STARTPTS[bkg{nextLayer}]");
-                filters.Add(source.Kind == "Background" ? $"[bkg{nextLayer}]copy[layer{nextLayer}]" : Overlay(current, nextLayer, source));
+                if (source.Kind == "Background")
+                {
+                    filters.Add($"[media{nextLayer}]setpts=PTS-STARTPTS[bkg{nextLayer}]");
+                    filters.Add($"[layer{current}][bkg{nextLayer}]overlay=x=W*{Percent(source.X)}:y=H*{Percent(source.Y)}:shortest=1[layer{nextLayer}]");
+                }
+                else filters.Add(Overlay(current, nextLayer, source));
             }
             else { continue; }
             current = nextLayer;
