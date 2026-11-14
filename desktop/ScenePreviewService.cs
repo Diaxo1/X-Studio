@@ -103,9 +103,10 @@ internal sealed class ScenePreviewService : IDisposable
         CaptureTargetFallback = false;
         if (!hasExplicitCapture && captureTarget != "desktop" && captureTarget != "transparent")
         {
-            // Older saved profiles can still contain a window target. Let
-            // gdigrab resolve it by title instead of feeding it a stale HWND.
-            capture = CaptureWindowService.ToFfmpegInput(captureTarget);
+            var targetWindow = CaptureWindowService.FindByTitle(captureTarget);
+            capture = targetWindow != IntPtr.Zero
+                ? CaptureWindowService.ToFfmpegInput(targetWindow)
+                : CaptureWindowService.ToFfmpegInput(captureTarget);
         }
         var args = new List<string> { "-hide_banner", "-loglevel", "error", "-nostats", "-filter_threads", "1", "-filter_complex_threads", "1" };
         if (hasExplicitCapture || captureTarget == "transparent") args.AddRange(["-f", "lavfi", "-i", $"color=c=black:s={width}x{height}:r={fps}"]);
@@ -143,10 +144,13 @@ internal sealed class ScenePreviewService : IDisposable
             else if (source.Kind is "Display" or "App")
             {
                 captureInputs[source.Id] = next++;
-                // Let gdigrab resolve the selected app title itself. Requiring our
-                // own HWND lookup first incorrectly rejected valid app windows
-                // (notably packaged and Chromium apps) and replaced them with black.
-                var input = source.Kind == "Display" ? "desktop" : CaptureWindowService.ToFfmpegInput(source.Content);
+                var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindBySource(source);
+                // Resolve the selected app using its process ID and freshest
+                // caption first. A title selector remains as fallback for windows
+                // that the native enumerator cannot resolve.
+                var input = source.Kind == "Display" ? "desktop"
+                    : window != IntPtr.Zero ? CaptureWindowService.ToFfmpegInput(window)
+                    : CaptureWindowService.ToFfmpegInput(source.Content);
                 args.AddRange(["-thread_queue_size", "4", "-f", "gdigrab", "-framerate", fps.ToString(CultureInfo.InvariantCulture), "-draw_mouse", "0", "-i", input]);
             }
             else if ((source.Kind is "Video" or "Background") && source.Content != "transparent" && File.Exists(source.Content))
