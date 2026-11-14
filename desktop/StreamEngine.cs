@@ -178,7 +178,10 @@ internal sealed class StreamEngine : IDisposable
     private static List<string> BuildArguments(EngineConfig config, bool useHardware)
     {
         var hasExplicitCapture = config.Scene.Sources.Any(source => source.Enabled && (source.Kind is "Display" or "App" or "Background"));
-        var captureInput = config.CaptureTarget is "desktop" or "transparent" ? "desktop" : CaptureWindowService.ToFfmpegInput(config.CaptureTarget);
+        var fallbackWindow = config.CaptureTarget is "desktop" or "transparent" ? IntPtr.Zero : CaptureWindowService.FindByTitle(config.CaptureTarget);
+        var captureInput = config.CaptureTarget is "desktop" or "transparent" ? "desktop"
+            : fallbackWindow != IntPtr.Zero ? CaptureWindowService.ToFfmpegInput(fallbackWindow)
+            : CaptureWindowService.ToFfmpegInput(config.CaptureTarget);
         var args = new List<string>
         {
             "-hide_banner", "-nostats", "-loglevel", "warning", "-stats_period", "1", "-progress", "pipe:2", "-filter_threads", "2", "-filter_complex_threads", "2"
@@ -211,7 +214,10 @@ internal sealed class StreamEngine : IDisposable
             else if (source.Kind is "Display" or "App")
             {
                 captureInputs[source.Id] = nextInput++;
-                var input = source.Kind == "Display" ? "desktop" : CaptureWindowService.ToFfmpegInput(source.Content);
+                var window = source.Kind == "Display" ? IntPtr.Zero : CaptureWindowService.FindBySource(source);
+                var input = source.Kind == "Display" ? "desktop"
+                    : window != IntPtr.Zero ? CaptureWindowService.ToFfmpegInput(window)
+                    : CaptureWindowService.ToFfmpegInput(source.Content);
                 args.AddRange(["-thread_queue_size", "8", "-f", "gdigrab", "-framerate", config.Fps.ToString(), "-draw_mouse", "0", "-i", input]);
             }
             else if ((source.Kind is "Video" or "Background") && source.Content != "transparent")
