@@ -40,13 +40,7 @@ internal sealed class PhoneCastService : IDisposable
                 }
             }
             if (handle == IntPtr.Zero) return null;
-            var title = CaptureWindowService.GetWindowTitle(handle);
-            // Receiver windows can be recreated by scrcpy/UxPlay while a phone
-            // reconnects. Use the current window caption so gdigrab resolves the
-            // active renderer at open time rather than retaining an old HWND.
-            return title.Length > 0
-                ? CaptureWindowService.ToFfmpegInput(title)
-                : CaptureWindowService.ToFfmpegInput(handle);
+            return CaptureWindowService.ToFfmpegInput(handle);
         }
         catch (InvalidOperationException) { return null; }
         catch (System.ComponentModel.Win32Exception) { return null; }
